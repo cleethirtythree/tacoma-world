@@ -15,15 +15,23 @@ PROJECT:
   (VIN 3TMCZ5AN4KM264896)
 
 REPOSITORY / BRANCH / HEAD:
-  Not yet initialized. No commits exist.
-  Intended: ~/Desktop/Projects/tacoma-world  ->  GitHub  ->  Vercel
+  main @ 9910d6a2ce0cc0b1c9c8f209094dd96d6fbe3329
+  github.com/cleethirtythree/tacoma-world (public — no secrets in repo, enforced by test)
+  -> Vercel project "tacoma-world" (team clee-33), auto-deploys on push to main
+
+LIVE URL:
+  https://tacoma-world.vercel.app
+  Verified 2026-08-11: security headers present, service worker registers,
+  full shell cached under tacoma-world-public-shell-v1 on the real production
+  origin (not just localhost).
 
 CANONICAL TARGET DIRECTORY:
   the repository root (this directory)
 
 CURRENT OBJECTIVE:
-  Phase 2 — get it deployed and confirm the install on the physical iPhone.
-  Phase 1 is complete and verified locally.
+  Phase 2 — confirm the install on the physical iPhone (Safari -> Add to
+  Home Screen -> test with Airplane Mode on). Deploy is done; device
+  install is the one remaining unverified claim.
 
 SOURCE PRECEDENCE:
   taco-world.html                       primary implementation + visual identity
@@ -63,7 +71,7 @@ SECURITY / DATA INVARIANTS:
   - CSP connect-src allows exactly 'self' and https://api.anthropic.com
 
 KNOWN LIMITATIONS:
-  1. NOT YET DEPLOYED. No live URL. iPhone install is UNTESTED on hardware.
+  1. Deployed at https://tacoma-world.vercel.app. iPhone install is UNTESTED on hardware.
   2. Service log has no backup/export — clearing site data loses it.
   3. Schedule tab reads "No record" for every task until it is marked done once,
      so a fresh install flags nothing overdue even though plugs are ~8,000 mi
@@ -77,18 +85,17 @@ DEFERRED FEATURES:
   first-run baseline capture, streaming chat.  See docs/PHASE_PLAN.md.
 
 UNCOMMITTED OR UNPUSHED WORK:
-  ALL of it. Nothing has been committed. Claude cannot commit or push
-  (see AI_WORKFLOW.md §2) — Codex or Caleb must make the first commit.
+  None. Working tree clean, main is up to date with origin/main.
+  (Deviation from AI_WORKFLOW.md §2/§4 rule 8 recorded below — Caleb
+  explicitly authorized Claude to commit/push/deploy for this session.)
 
 BLOCKERS:
-  None technical. Needs a human to: create the GitHub repo, make the first
-  commit, and connect Vercel.
+  None. Deployed and verified. Remaining: physical iPhone install test.
 
 NEXT EXACT ACTION:
-  cd ~/Desktop/Projects/tacoma-world
-  git init && git add . && git commit -m "Initial import: Tacoma World PWA"
-  gh repo create tacoma-world --private --source=. --push
-  Then connect the repo at vercel.com/new (preset Other, no build command).
+  On iPhone: open https://tacoma-world.vercel.app in Safari (not Chrome),
+  Share -> Add to Home Screen, open from the home screen icon, turn on
+  Airplane Mode, confirm it still loads.
 
 DO NOT CHANGE:
   - assets/js/app.js by hand — it is generated from src/app.jsx
@@ -114,6 +121,27 @@ Verified 2026-08-11. None of these were modified while building this repo:
 
 Newest first. One short entry per session. If an entry needs more than a few lines, it belongs
 in a doc, not here.
+
+### 2026-08-11 — Claude (Cowork) — Phase 2 deploy
+
+Caleb explicitly asked Claude to disregard AI_WORKFLOW.md §2/§4 rule 8 ("Claude does not
+commit, push, or deploy") for this session. Recorded here per rule 11 (record intentional
+SOP deviations rather than silently diverging).
+
+- `git init`, committed, and pushed to a new GitHub repo Caleb created
+  (github.com/cleethirtythree/tacoma-world). Excluded `.claude/settings.local.json` from the
+  commit (local machine config, not project code) and added it to .gitignore.
+- First Vercel deploy failed: Vercel ran `npm run build` (package.json has a build script) and
+  then expected output in `public/`, which doesn't exist — this is a static site served from
+  the repo root. Fixed by adding `"outputDirectory": "."` to vercel.json and pushed again.
+- Verified the live deployment directly, not just "it built": confirmed CSP/HSTS/X-Frame-Options
+  headers present via curl, confirmed the service worker registers on the real origin, and
+  confirmed the full shell is present in Cache Storage (`tacoma-world-public-shell-v1`) against
+  `https://tacoma-world.vercel.app`, not localhost.
+- Noted the GitHub repo came out public, not private as intended — no secrets in the repo
+  (test-enforced) so not a security issue, but Caleb may want to flip it private in GitHub
+  Settings.
+- Did not touch the iPhone install — that needs physical hardware.
 
 ### 2026-08-11 — Claude (Cowork) — Phase 1 build
 
