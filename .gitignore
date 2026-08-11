@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+package-lock.json
+
+# Environment and secrets — never commit an API key
+.env
+.env.*
+*.pem
+*.key
+
+# Build and test output
+coverage/
+test-results/
+playwright-report/
+*.log
+
+# Local deployment metadata
+.vercel/
+
+# OS and editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Local Claude Code settings (machine-specific, not project config)
+.claude/
+
+# Scratch
+tmp/
+*.bak

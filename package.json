@@ -1,0 +1,19 @@
+{
+  "name": "tacoma-world",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Offline-capable PWA for maintaining a 2019 Toyota Tacoma TRD Sport (VIN 3TMCZ5AN4KM264896).",
+  "scripts": {
+    "build": "node scripts/build.js",
+    "test": "node tests/run.js",
+    "serve": "node scripts/serve.js",
+    "check": "npm run build && npm test"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.26.0",
+    "@babel/preset-react": "^7.26.3"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
