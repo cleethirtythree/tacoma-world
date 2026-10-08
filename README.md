@@ -24,7 +24,7 @@ HTML directly will not register one and offline behavior cannot be tested.
 ## Test it
 
 ```sh
-npm test          # 48 contract tests, no packages required
+npm test          # 80 contract tests, no packages required
 npm run check     # build + test — run this before every commit
 ```
 
@@ -40,21 +40,33 @@ installed phones keep serving the old build from cache and the deploy appears to
 
 Open the deployed URL in **Safari** → Share → **Add to Home Screen**.
 
-Then tap **⚙** and paste an Anthropic API key from console.anthropic.com to enable AI chat. The
-key is stored on that device only and is sent nowhere except Anthropic.
+Open it from the home-screen icon **before** entering anything: the installed app has its own
+storage, separate from the Safari tab. Then tap **⚙** and paste an Anthropic API key from
+console.anthropic.com to enable AI chat. The key is stored on that device only and is sent
+nowhere except Anthropic.
+
+## Run it on the cyberdeck (no internet)
+
+A Raspberry Pi 5 serves the app to itself and runs a local AI model, and boots straight into
+it full screen. One-time setup with internet, then never again: see `docs/CYBERDECK.md`.
 
 ## What works without a signal
 
-Everything except AI chat and the YouTube links: all torque specs, part numbers, tools, tips,
-search, mileage entry, and the service log.
+On the phone: everything except AI chat and the YouTube links. All torque specs, part numbers,
+tools, tips, search, mileage entry, and the service log.
+
+On the cyberdeck: everything except the YouTube links. AI chat uses a local model.
 
 ## What you should know before relying on it
 
-- **The service log has no backup.** Clearing Safari website data erases it. See
-  `docs/PHASE_PLAN.md` Phase 3.
+- **Back up the service log yourself.** ⚙ → Export log. Clearing Safari website data erases
+  anything not exported. The phone and the deck keep separate logs; move them with
+  Export/Import.
 - **Nothing is encrypted.** It stores an odometer reading and a maintenance log on your device.
-- **The Schedule tab shows "No record" until a task is marked done once** — it knows each
-  interval but not when the work last happened, so a fresh install flags nothing as overdue.
+- **The Schedule tab shows "No record" until each task has a last-done record.** Open a task
+  and use *Done before?* to log a past odometer reading, or *Never done* for factory-original
+  parts. Until then it can't flag that task as overdue.
+- **The offline model on the deck can be wrong.** Confirm torque values in the Library.
 - **Accessibility is unaudited.** The dark theme likely fails WCAG AA contrast in places.
 
 ## Layout
@@ -63,7 +75,8 @@ search, mileage entry, and the service log.
 src/app.jsx              ← edit this. All app logic and vehicle data.
 assets/js/app.js         ← generated. Do not edit.
 service-worker.js        ← offline shell cache. Bump SHELL_VERSION on change.
-tests/                   ← 48 contract tests, dependency-free
+tests/                   ← 80 contract tests, dependency-free
+deck/                    ← cyberdeck setup, kiosk launcher, updater
 docs/                    ← product contract, reuse matrix, architecture, phases, handoff
 ```
 

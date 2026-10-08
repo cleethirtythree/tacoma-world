@@ -1,6 +1,6 @@
 # Architecture — Tacoma World
 
-**Version:** 1.0 · **Last updated:** 2026-08-11 · SOP §10
+**Version:** 1.1 · **Last updated:** 2026-10-07 · SOP §10
 
 ## Shape
 
@@ -10,20 +10,27 @@
     assets/js/app.js           GENERATED from src/app.jsx
          │
     ┌────┴─────────────────────────────────────┐
-    │  src/app.jsx                             │
-    │    TASKS[]        domain data (14 items) │
-    │    SYS_PROMPT     LLM grounding          │
-    │    getStatus()    interval arithmetic    │
-    │    TacomaHub      state + rendering      │
-    │      └ localStorage: taco-mi / taco-log  │
-    │      └ fetch: api.anthropic.com          │
-    └──────────────────────────────────────────┘
+    │  src/app.jsx                                     │
+    │    TASKS[]            domain data (14 items)     │
+    │    SYS_PROMPT         LLM grounding              │
+    │    LOCAL_PREAMBLE     extra rules, offline model │
+    │    getStatus()        interval arithmetic        │
+    │    mergeBackup()      backup import rule         │
+    │    isLoopbackEndpoint() offline-AI address gate  │
+    │    TacomaHub          state + rendering          │
+    │      └ localStorage: taco-mi / taco-log / taco-ai│
+    │      └ fetch: api.anthropic.com      (phone)     │
+    │      └ fetch: 127.0.0.1:11434        (deck)      │
+    └──────────────────────────────────────────────────┘
 
     service-worker.js          public shell cache only, versioned
-    vercel.json                static hosting + CSP + security headers
+    vercel.json                static hosting + CSP + security headers (phone)
+    scripts/serve.js           static server; on the deck, a loopback-only service
+    deck/                      cyberdeck setup, kiosk launcher, updater
 ```
 
-There is no server, no database, no backend, and no build output beyond one compiled file.
+There is no server-side code, no database, and no build output beyond one compiled file. On the
+deck, `scripts/serve.js` serves the same static files to the Pi itself.
 
 ## Layer boundaries
 
@@ -31,8 +38,8 @@ There is no server, no database, no backend, and no build output beyond one comp
 |---|---|---|
 | Domain data | `TASKS[]` in `src/app.jsx` | Plain array. Corrections live here and are guarded by tests. |
 | Domain rules | `getStatus()` | Mileage vs. interval → ok / due / overdue. The only real logic. |
-| Persistence | `localStorage` | Three keys. No adapter layer — the surface is too small to justify one. |
-| Network | one `fetch` in `send()` | The single external call in the product. |
+| Persistence | `localStorage` | Six keys. No adapter layer — the surface is too small to justify one. Backup is a JSON file the user exports. |
+| Network | `sendCloud()` / `sendLocal()` | Cloud: Anthropic Messages API. Local: OpenAI-compatible chat API on loopback, streamed. Chosen in ⚙ per device. |
 | UI | React components | Inline style objects, no CSS framework. |
 | Delivery | service worker + manifest | The platform boundary that was rewritten. |
 
@@ -58,6 +65,18 @@ Cost: 143 KB, served once and cached. Update by replacing the two files and bump
 browser — is what the original did, and it required a CDN at runtime. Moving compilation ahead
 of time is precisely what buys the offline behavior. Dev-only; nothing ships to the browser.
 
+### Deck runtime: Ollama (not a repo dependency)
+
+**Needed because** the deck must answer with no internet, and the Anthropic API is the only
+other AI path. Ollama is installed on the Pi by `deck/setup.sh`; nothing in this repo imports it.
+The app speaks the **OpenAI-compatible** `/v1/chat/completions` API rather than Ollama's native
+API, so llama.cpp server, LM Studio, or `tacoma-copilot` (if it exposes that API) can replace
+Ollama by changing the address in ⚙. Bound to `127.0.0.1`; `OLLAMA_ORIGINS` admits only the app.
+
+**Why not `tacoma-copilot` directly:** it's a separate FastAPI + RAG product that lives outside
+this repo (`~/Desktop/Tacoma/App - Tacoma Copilot/`), and its API was not available when this
+was built. The two products still share vehicle facts, not code.
+
 ### Not added, and why
 
 | Considered | Rejected because |
@@ -67,6 +86,8 @@ of time is precisely what buys the offline behavior. Dev-only; nothing ships to 
 | Tailwind / CSS framework | Styling already exists as inline objects. Adding a framework means restyling a working UI. |
 | IndexedDB + encryption (Dream Atlas pattern) | Data is an odometer reading and a service log. See `REUSE_MATRIX.md`. |
 | A server-side API-key proxy | Would require a backend for a single-user personal tool. The key stays on the user's own device; the tradeoff is stated in `PRODUCT_CONTRACT.md`. |
+| A sync backend for phone ↔ deck | The deck is used without network by definition, so sync couldn't run when it matters. A merge-safe backup file works in both directions. |
+| Allowing a LAN address for the offline model | Would let a link point chat at another machine. Loopback only; the deck runs its own model. |
 | React Router | Three tabs held in `useState`. A router would add a dependency and URL complexity for nothing. |
 
 ## Architecture gate (SOP §10)

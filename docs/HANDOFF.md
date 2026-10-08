@@ -12,96 +12,74 @@
 ```text
 PROJECT:
   Tacoma World — offline-capable PWA for a 2019 Toyota Tacoma TRD Sport
-  (VIN 3TMCZ5AN4KM264896)
+  (VIN 3TMCZ5AN4KM264896). Two devices: iPhone (cloud AI) and a Raspberry Pi 5
+  cyberdeck (local AI, assumes no Wi-Fi).
 
 REPOSITORY / BRANCH / HEAD:
-  main @ 9910d6a2ce0cc0b1c9c8f209094dd96d6fbe3329
-  github.com/cleethirtythree/tacoma-world (public — no secrets in repo, enforced by test)
-  -> Vercel project "tacoma-world" (team clee-33), auto-deploys on push to main
+  main — this session adds 5 commits on top of e2e0f47, delivered as a patch
+  series for Caleb to apply with `git am` and push. Verify with `git log`.
+  github.com/cleethirtythree/tacoma-world (public) -> Vercel "tacoma-world"
 
 LIVE URL:
-  https://tacoma-world.vercel.app
-  Verified 2026-08-11: security headers present, service worker registers,
-  full shell cached under tacoma-world-public-shell-v1 on the real production
-  origin (not just localhost).
-
-CANONICAL TARGET DIRECTORY:
-  the repository root (this directory)
+  https://tacoma-world.vercel.app  (auto-deploys on push to main)
 
 CURRENT OBJECTIVE:
-  Phase 2 — confirm the install on the physical iPhone (Safari -> Add to
-  Home Screen -> test with Airplane Mode on). Deploy is done; device
-  install is the one remaining unverified claim.
+  1. Push this series so the live site gets the model fix.
+  2. Phase 2 on the iPhone (PHASE_PLAN.md, steps 3-7).
+  3. Phase 4 on the Pi 5 (docs/CYBERDECK.md, PHASE_PLAN.md acceptance 1-5).
 
 SOURCE PRECEDENCE:
-  taco-world.html                       primary implementation + visual identity
-  "TRD Sport DIY Maintenance & Torque Reference"   vehicle facts, overrides everything
-  2019_Tacoma_TRD_Pro_*.md              SUPERSEDED, wrong trim, do not use
-  docs/AI_APP_BUILD_SOP.md              process and repo structure
-  (full table: docs/REUSE_MATRIX.md)
+  unchanged — see REUSE_MATRIX.md. Vehicle facts: the TRD Sport reference.
 
-VERIFIED WORKING BEHAVIOR:
-  48/48 contract tests pass
-  12/13 browser workflows pass at 390px and 1440x900 (the 13th was a wrong test
-    expectation, since corrected — see KNOWN LIMITATIONS)
-  Offline reload renders fully with the network disabled, user data intact
-  No CDN in the critical path; React vendored
-  No API key anywhere in the repo
-  Mutation-tested: reintroducing the Pro rear-diff volume, the 4-cylinder spark
-    plug PN, or a CDN script tag each fail the suite
+VERIFIED WORKING BEHAVIOR (2026-10-07, claude.ai sandbox — no browser, no Pi):
+  80/80 contract tests pass (npm run check)
+  43 UI checks against the compiled bundle in jsdom: baseline logging, export,
+    import merge, offline AI streaming against a mock OpenAI-compatible server,
+    warm-up, launch params, loopback rejection, missing-model and dead-server
+    messages, cloud request shape, auth-error handling
+  deck/setup.sh dry-run with stubbed apt/systemctl/sudo and real HTTP mocks:
+    completes, idempotent on re-run, kiosk launches the offline URL
+  scripts/serve.js returns 404 for /.git, /.env and encoded traversal
+  shellcheck clean on deck/*.sh
+
+NOT VERIFIED — needs hardware:
+  - any real Claude API call (no network to Anthropic from the sandbox)
+  - iPhone install, share-sheet export, file-picker import
+  - Raspberry Pi: Ollama install, real model output, speed, kiosk autostart,
+    raspi-config codes (do_wayland W3, do_boot_behaviour B4, do_blanking 1)
 
 FILES CHANGED:
-  Everything. This is the initial import — no prior commits.
-  Adapted from taco-world.html: src/app.jsx (spec corrections + iOS viewport fix)
-  New: service worker, manifest, icons, build/serve scripts, 48 tests, all docs
-  Vendored: react.min.js, react-dom.min.js (18.3.1, MIT)
-
-TESTS PASSED:
-  48 automated (21 PWA contract, 18 vehicle contract, 9 schedule contract)
-  Browser: first run, mileage entry, mark done, reload persistence, search,
-    missing-key handling, offline reload, desktop, mobile overflow, keyboard,
-    console cleanliness
+  src/app.jsx, assets/js/app.js (generated), service-worker.js (v1 -> v5),
+  index.html, scripts/serve.js, deck/{setup,kiosk,update}.sh,
+  tests/{extract,ai-contract,backup-contract,deck-contract}.test.js + run.js,
+  tests/vehicle-contract.test.js (freshness markers), README, CLAUDE.md,
+  AGENTS.md, docs/{CYBERDECK,PRODUCT_CONTRACT,ARCHITECTURE,PHASE_PLAN,HANDOFF}.md
 
 SECURITY / DATA INVARIANTS:
-  - service worker caches ONLY the fixed public shell; never the Anthropic API
-  - no API key in the repo (test-enforced against any sk-ant- string)
-  - the key lives in the user's own browser localStorage, sent only to Anthropic
-  - no server, no account, no sync, no telemetry, no analytics
-  - nothing is encrypted at rest; the product contract says so plainly
-  - CSP connect-src allows exactly 'self' and https://api.anthropic.com
+  - service worker caches ONLY the public shell; never any API
+  - no API key in the repo (test-enforced); the backup file never contains it
+  - production CSP unchanged: connect-src 'self' https://api.anthropic.com
+  - offline AI is loopback-only, in code (isLoopbackEndpoint) and on the Pi
+    (OLLAMA_HOST=127.0.0.1, app server HOST=127.0.0.1)
+  - no server-side code, no account, no sync, no telemetry
+  - nothing encrypted at rest; the contract says so
 
 KNOWN LIMITATIONS:
-  1. Deployed at https://tacoma-world.vercel.app. iPhone install is UNTESTED on hardware.
-  2. Service log has no backup/export — clearing site data loses it.
-  3. Schedule tab reads "No record" for every task until it is marked done once,
-     so a fresh install flags nothing overdue even though plugs are ~8,000 mi
-     past due. Pinned by schedule-contract.test.js. Product decision, Phase 3.
-  4. Accessibility unaudited; dark theme likely fails WCAG AA contrast.
-  5. Model ID claude-sonnet-4-20250514 is hardcoded and may be superseded.
-  6. React updates are manual.
-
-DEFERRED FEATURES:
-  export/import, accounts, sync, photos, multi-vehicle, offline AI,
-  first-run baseline capture, streaming chat.  See docs/PHASE_PLAN.md.
-
-UNCOMMITTED OR UNPUSHED WORK:
-  None. Working tree clean, main is up to date with origin/main.
-  (Deviation from AI_WORKFLOW.md §2/§4 rule 8 recorded below — Caleb
-  explicitly authorized Claude to commit/push/deploy for this session.)
-
-BLOCKERS:
-  None. Deployed and verified. Remaining: physical iPhone install test.
+  1. Phone and deck logs are separate; export/import by hand is the only bridge.
+  2. Offline model quality/speed unmeasured; UI says to confirm torque values.
+  3. Accessibility unaudited (unchanged).
+  4. Cloud chat does not stream.
+  5. React updates are manual (unchanged).
+  6. GitHub repo is public; flip to private in GitHub settings if intended.
 
 NEXT EXACT ACTION:
-  On iPhone: open https://tacoma-world.vercel.app in Safari (not Chrome),
-  Share -> Add to Home Screen, open from the home screen icon, turn on
-  Airplane Mode, confirm it still loads.
+  Caleb: apply the patch, `npm run check`, push. Then iPhone Phase 2.
 
 DO NOT CHANGE:
-  - assets/js/app.js by hand — it is generated from src/app.jsx
-  - the localStorage keys taco-mi / taco-log / taco-apikey — existing users' data
+  - assets/js/app.js by hand — generated from src/app.jsx
+  - localStorage keys taco-mi / taco-log / taco-apikey — existing data
   - tests/vehicle-contract.test.js guards — a failure means the DATA is wrong
-  - ~/Desktop/Tacoma/Hub Pages/taco-world.html — the untouched reference
+  - tests/ai-contract.test.js RETIRED_MODELS — add to it, never remove
 ```
 
 ---
@@ -121,6 +99,21 @@ Verified 2026-08-11. None of these were modified while building this repo:
 
 Newest first. One short entry per session. If an entry needs more than a few lines, it belongs
 in a doc, not here.
+
+### 2026-10-07 — Claude (claude.ai chat) — model fix, backup, cyberdeck offline mode
+
+Worked in a sandbox clone; no commit or push to GitHub (AI_WORKFLOW rule 8 respected —
+delivered as a `git format-patch` series for Caleb to review and apply).
+
+- Found the live AI Wrench had never worked: `claude-sonnet-4-20250514` was retired 2026-06-15,
+  before the first deploy. No test sent a message. Fixed (`CLOUD_MODEL`), and retired IDs now
+  fail the build.
+- Caleb set the device rule: phone = Wi-Fi/cloud; deck = assume no Wi-Fi. Built the deck as this
+  same app served locally plus a local model (Ollama), not as a route to `tacoma-copilot`.
+  Contract change recorded in PRODUCT_CONTRACT v1.1 (rule 11).
+- Pulled export/import and baseline capture forward from Phase 3, since two devices now keep
+  separate logs.
+- Verified in jsdom and with stubbed dry-runs; nothing has run on an iPhone or a Pi yet.
 
 ### 2026-08-11 — Claude (Cowork) — Phase 2 deploy
 

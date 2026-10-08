@@ -24,7 +24,7 @@ It is a PWA. It is not a native iOS app. Do not describe it as one.
 git pull
 git status          # must be clean
 npm install         # first time only
-npm run check       # build + 39 contract tests; confirm green BEFORE you start
+npm run check       # build + 80 contract tests; confirm green BEFORE you start
 ```
 
 ## The three things that break this project

@@ -38,7 +38,7 @@ This means:
 Your cloud sandbox has Node and a browser. You can and should:
 
 ```sh
-npm install && npm run check    # build + 39 contract tests
+npm install && npm run check    # build + 80 contract tests
 npm run serve                   # then drive it with Playwright at localhost:8600
 ```
 

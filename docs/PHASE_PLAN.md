@@ -1,12 +1,12 @@
 # Phase Plan — Tacoma World
 
-**Version:** 1.0 · **Last updated:** 2026-08-11 · SOP §11
+**Version:** 1.1 · **Last updated:** 2026-10-07 · SOP §11
 
 SOP §11: "Do not allow Phase 1 to silently become the entire product roadmap."
 
 ---
 
-## Phase 1 — Installable offline reference · **COMPLETE, not yet deployed**
+## Phase 1 — Installable offline reference · **COMPLETE, deployed 2026-08-11**
 
 **Included**
 
@@ -42,14 +42,16 @@ confirmed on the physical device.
 
 ---
 
-## Phase 2 — Deploy and confirm on the device · **NEXT**
+## Phase 2 — Deploy and confirm on the device · **IN PROGRESS**
 
-1. Push the repo to GitHub
-2. Connect the repo to Vercel, confirm the first deploy
+1. ~~Push the repo to GitHub~~ — done 2026-08-11
+2. ~~Connect the repo to Vercel, confirm the first deploy~~ — done 2026-08-11
 3. Install to the iPhone home screen from the live URL
-4. Enter the API key, send one chat message
+4. Enter the API key, send one chat message. *(Would have failed before 2026-10-07: the
+   hardcoded model had been retired. Fixed; see HANDOFF.)*
 5. Enter 128342, mark one task done, force-quit, reopen, confirm it persisted
 6. Turn on Airplane Mode and confirm specs still load
+7. ⚙ → Export log → Save to Files; confirm the file appears
 
 **Acceptance:** all six confirmed on the physical phone, not in an emulator. Record results in
 `HANDOFF.md`.
@@ -62,27 +64,37 @@ The honest gaps in Phase 1.
 
 | Item | Why it matters |
 |---|---|
-| **Export / import the service log** | Today, clearing Safari data erases the maintenance history with no recovery. This is the single largest real defect. |
-| **First-run baseline capture** | Every task reads "No record" until logged once, so a fresh install never flags anything overdue — even the spark plugs, ~8,000 mi past due. Options: prompt for known service history on first run, or seed sensible defaults. Found during Phase 1 browser verification. |
+| ~~**Export / import the service log**~~ | **Done 2026-10-07** (pulled forward: phone + deck need a bridge). Manual, merge-safe. |
+| ~~**First-run baseline capture**~~ | **Done 2026-10-07** as *Done before? / Never done* per task, plus a Schedule hint. No guessing. |
 | **WCAG AA contrast audit** | `#888` and `#555` on near-black likely fail AA. Never audited. |
 | **Keyboard and screen-reader pass** | Never exercised. |
-| **Storage-eviction handling** | iOS may evict data for unused web apps. `navigator.storage.persist()` is not requested. |
-| **AI chat streaming** | Currently blocks until the whole reply arrives. |
-| **Model ID review** | `claude-sonnet-4-20250514` is hardcoded in `src/app.jsx` and may be superseded. |
+| ~~**Storage-eviction handling**~~ | **Done 2026-10-07**: `navigator.storage.persist()` requested. Export remains the real protection. |
+| **AI chat streaming (cloud)** | Offline chat streams; cloud still waits for the whole reply. |
+| ~~**Model ID review**~~ | **Done 2026-10-07**: the ID had been retired; now `CLOUD_MODEL`, and retired IDs fail the build. |
 
-**Do not begin Phase 3 until Phase 2 is confirmed on the device.**
+Remaining Phase 3 work waits for Phase 2 to be confirmed on the phone.
 
 ---
 
-## Phase 4 — Pi assistant integration · **DEFERRED, separate product**
+## Phase 4 — Cyberdeck offline mode · **BUILT 2026-10-07, not yet run on Pi hardware**
 
-`tacoma-copilot` is a FastAPI + RAG application intended for a Raspberry Pi 5 (on order as of
-2026-08-11). It is a **sibling product, not a component of this one.**
+Rule from Caleb: the deck is used on the assumption that Wi-Fi is gone. So the deck runs this
+same app, served from the Pi to itself (`scripts/serve.js` on `127.0.0.1:8600`), with AI Wrench
+pointed at a local model (Ollama on `127.0.0.1:11434`). Because the app and the model are both
+on the Pi, the mixed-content / local-certificate problem the earlier plan worried about doesn't
+arise; it only exists for a *phone* reaching a Pi, which is not a goal.
 
-Possible later integration: when on home wifi, route AI Wrench at the Pi instead of the
-Anthropic API — free, fully offline inference. This requires the Pi to be reachable over HTTPS
-from an installed PWA, which is a real networking problem (mixed content, local certificates).
-Not scoped.
+Setup and operation: `docs/CYBERDECK.md`. Acceptance, on the physical deck:
+
+1. `bash deck/setup.sh` completes with all three self-test lines `ok`
+2. Reboot lands in the app, full screen, AI Wrench showing `OFFLINE AI`
+3. With Wi-Fi **off**: ask "oil drain plug torque" and get 30 lb-ft
+4. Record time-to-first-word and words per second in HANDOFF
+5. Import a backup exported from the phone; confirm the merged log
+
+`tacoma-copilot` (FastAPI + RAG) remains a **separate product**. It can replace Ollama behind
+AI Wrench if it exposes an OpenAI-compatible `/v1/chat/completions`; otherwise it stays
+standalone.
 
 **The two products share vehicle facts, not code.** Both were corrected to TRD Sport on
 2026-08-11. A future spec correction must be applied to both — `src/app.jsx` here, and
