@@ -311,6 +311,39 @@ function getStatus(task, mileage, log) {
   return { status:"ok", label:`${(task.interval - since).toLocaleString()} mi left`, color:"#22c55e" };
 }
 
+// How a log entry reads. "Never done" is stored as a baseline at 0 mi.
+function describeLog(log) {
+  if (log.baseline && log.mileage === 0) return "factory original";
+  const d = log.date ? new Date(log.date) : null;
+  const when = d && !isNaN(d.getTime()) ? d.toLocaleDateString() : "date not recorded";
+  return log.mileage.toLocaleString() + " mi · " + when;
+}
+
+// Backup file contents: mileage and the service log. Never the API key.
+function buildBackup(mileage, logs) {
+  return { app:"tacoma-world", version:1, exportedAt:new Date().toISOString(), mileage, logs };
+}
+
+// Merge a backup into current data so the phone and the deck can trade files in either
+// direction. Never deletes. Per task, the higher-mileage record wins; a tie keeps what's here.
+function mergeBackup(current, incoming, taskIds) {
+  if (!incoming || incoming.app !== "tacoma-world" || !incoming.logs || typeof incoming.logs !== "object") {
+    throw new Error("That file isn't a Tacoma World backup.");
+  }
+  const logs = { ...current.logs };
+  let added = 0, updated = 0;
+  for (const id of Object.keys(incoming.logs)) {
+    const r = incoming.logs[id];
+    if (!taskIds.includes(id) || !r || !Number.isFinite(r.mileage) || r.mileage < 0) continue;
+    const rec = { mileage:Math.floor(r.mileage), date: typeof r.date === "string" ? r.date : null };
+    if (r.baseline === true) rec.baseline = true;
+    if (!logs[id]) { logs[id] = rec; added++; }
+    else if (rec.mileage > logs[id].mileage) { logs[id] = rec; updated++; }
+  }
+  const inMi = Number.isFinite(incoming.mileage) && incoming.mileage > 0 ? Math.floor(incoming.mileage) : 0;
+  return { mileage:Math.max(current.mileage || 0, inMi), logs, added, updated };
+}
+
 function TacomaHub() {
   const [tab, setTab] = useState("schedule");
   const [mileage, setMileage] = useState(0);
@@ -326,6 +359,8 @@ function TacomaHub() {
   const [apiKey, setApiKey] = useState(() => localStorage.getItem("taco-apikey") || "");
   const [showSettings, setShowSettings] = useState(false);
   const [apiKeyInput, setApiKeyInput] = useState("");
+  const [backupMsg, setBackupMsg] = useState("");
+  const importRef = useRef(null);
   const chatEnd = useRef(null);
 
   useEffect(() => {
@@ -335,6 +370,8 @@ function TacomaHub() {
     if (l) { try { setLogs(JSON.parse(l)); } catch(e) {} }
   }, []);
 
+  useEffect(() => { try { navigator.storage?.persist?.().catch(() => {}); } catch (e) {} }, []);
+
   useEffect(() => { chatEnd.current?.scrollIntoView({ behavior:"smooth" }); }, [msgs, aiLoading]);
 
   const saveMiles = () => {
@@ -342,11 +379,59 @@ function TacomaHub() {
     if (!isNaN(n) && n > 0) { setMileage(n); localStorage.setItem("taco-mi", String(n)); }
   };
 
-  const markDone = (id) => {
-    if (!mileage) { alert("Set your current mileage first."); return; }
-    const updated = { ...logs, [id]:{ mileage, date:new Date().toISOString() } };
+  const saveLogs = (updated) => {
     setLogs(updated);
     localStorage.setItem("taco-log", JSON.stringify(updated));
+  };
+
+  const markDone = (id) => {
+    if (!mileage) { alert("Set your current mileage first."); return; }
+    saveLogs({ ...logs, [id]:{ mileage, date:new Date().toISOString() } });
+  };
+
+  // Record work done before this app existed. 0 mi = never done (factory original).
+  const logPast = (id, mi) => {
+    if (!Number.isFinite(mi) || mi < 0) { alert("Enter the odometer reading from when it was last done."); return false; }
+    if (mileage && mi > mileage) { alert(`That's higher than the current mileage (${mileage.toLocaleString()} mi).`); return false; }
+    saveLogs({ ...logs, [id]:{ mileage:Math.floor(mi), date:null, baseline:true } });
+    return true;
+  };
+
+  const exportLog = async () => {
+    const data = JSON.stringify(buildBackup(mileage, logs), null, 2);
+    const name = `tacoma-world-backup-${new Date().toISOString().slice(0,10)}.json`;
+    try {
+      const file = new File([data], name, { type:"application/json" });
+      if (navigator.canShare && navigator.canShare({ files:[file] })) {
+        await navigator.share({ files:[file], title:"Tacoma World backup" });
+        setBackupMsg("Backup shared.");
+        return;
+      }
+    } catch (e) {
+      if (e && e.name === "AbortError") return;
+    }
+    const url = URL.createObjectURL(new Blob([data], { type:"application/json" }));
+    const a = document.createElement("a");
+    a.href = url; a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    setBackupMsg(`Saved ${name}.`);
+  };
+
+  const importLog = async (e) => {
+    const f = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!f) return;
+    try {
+      let incoming;
+      try { incoming = JSON.parse(await f.text()); } catch (err) { throw new Error("That file isn't a Tacoma World backup."); }
+      const res = mergeBackup({ mileage, logs }, incoming, TASKS.map(t => t.id));
+      saveLogs(res.logs);
+      if (res.mileage > mileage) { setMileage(res.mileage); setMileInput(String(res.mileage)); localStorage.setItem("taco-mi", String(res.mileage)); }
+      setBackupMsg(`Imported: ${res.added} new, ${res.updated} updated. Records already here with higher mileage were kept.`);
+    } catch (err) {
+      setBackupMsg("Import failed. " + err.message);
+    }
   };
 
   const saveApiKey = () => {
@@ -408,6 +493,8 @@ function TacomaHub() {
     return order[getStatus(a,mileage,logs[a.id]).status] - order[getStatus(b,mileage,logs[b.id]).status];
   });
 
+  const unlogged = TASKS.filter(t => t.interval > 0 && !logs[t.id]).length;
+
   const filtered = TASKS.filter(t =>
     t.name.toLowerCase().includes(search.toLowerCase()) ||
     t.cat.toLowerCase().includes(search.toLowerCase())
@@ -466,7 +553,7 @@ function TacomaHub() {
     ctxBanner:{ padding:"7px 16px", background:"#0a1500", borderBottom:"1px solid #1a2800", fontSize:"11px", color:"#4ade80", fontFamily:"'Courier New', monospace", flexShrink:0 },
     noKey:{ margin:"16px", padding:"14px", background:"#1a0a00", border:"1px solid #330", borderRadius:"4px", color:"#f5a623", fontSize:"13px", lineHeight:1.7, fontFamily:"'Courier New', monospace" },
     modal:{ position:"fixed", inset:0, background:"rgba(0,0,0,0.85)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:1000 },
-    modalBox:{ background:"#161616", border:"1px solid #2a2a2a", borderRadius:"8px", padding:"24px", width:"100%", maxWidth:"440px", margin:"16px" },
+    modalBox:{ background:"#161616", border:"1px solid #2a2a2a", borderRadius:"8px", padding:"24px", width:"100%", maxWidth:"440px", margin:"16px", maxHeight:"90%", overflowY:"auto" },
     modalTitle:{ fontFamily:"Impact, sans-serif", fontSize:"18px", letterSpacing:"0.06em", textTransform:"uppercase", color:"#f0f0f0", marginBottom:"4px" },
     modalSub:{ fontFamily:"'Courier New', monospace", fontSize:"11px", color:"#888", marginBottom:"16px", lineHeight:1.6 },
     modalInput:{ width:"100%", background:"#0d0d0d", border:"1px solid #cc0000", borderRadius:"4px", color:"#f0f0f0", fontFamily:"'Courier New', monospace", fontSize:"13px", padding:"10px 12px", outline:"none", marginBottom:"10px" },
@@ -476,6 +563,15 @@ function TacomaHub() {
     link:{ color:"#f5a623", textDecoration:"underline" },
     chevron:{ color:"#333", fontSize:"16px", flexShrink:0 },
     divider:{ height:"16px" },
+    hint:{ padding:"10px 16px", background:"#121212", borderBottom:"1px solid #1e1e1e", color:"#9a9a9a", fontSize:"12px", lineHeight:1.5 },
+    pastRow:{ display:"flex", alignItems:"center", gap:"6px", flexWrap:"wrap", marginTop:"12px", paddingTop:"10px", borderTop:"1px solid #222" },
+    pastLabel:{ fontFamily:"'Courier New', monospace", fontSize:"11px", color:"#888", marginRight:"2px" },
+    pastIn:{ background:"#0d0d0d", border:"1px solid #2a2a2a", borderRadius:"4px", color:"#f0f0f0", fontFamily:"'Courier New', monospace", padding:"5px 8px", width:"110px" },
+    pastBtn:{ background:"transparent", border:"1px solid #333", borderRadius:"3px", color:"#bbb", fontFamily:"Impact, sans-serif", letterSpacing:"0.06em", fontSize:"12px", padding:"5px 10px", cursor:"pointer" },
+    setSec:{ marginTop:"18px" },
+    setRow:{ display:"flex", gap:"8px", flexWrap:"wrap", alignItems:"center" },
+    statusLine:(c) => ({ fontFamily:"'Courier New', monospace", fontSize:"11px", color:c, marginTop:"10px", lineHeight:1.6 }),
+    modalDone:{ background:"transparent", border:"1px solid #333", borderRadius:"4px", color:"#f0f0f0", fontFamily:"Impact, sans-serif", letterSpacing:"0.06em", fontSize:"14px", padding:"9px 20px", cursor:"pointer", marginTop:"20px", width:"100%" },
   };
 
   function TaskHover({ t }) {
@@ -493,7 +589,7 @@ function TacomaHub() {
         <div style={{ flex:1, minWidth:0 }}>
           <div style={T.tName}>{t.name}</div>
           <div style={T.tSub}>{CAT_ICONS[t.cat]} {t.cat} · {t.intervalLabel}</div>
-          {log && <div style={{ ...T.tSub, color:"#3a3a3a" }}>last: {log.mileage.toLocaleString()} mi · {new Date(log.date).toLocaleDateString()}</div>}
+          {log && <div style={{ ...T.tSub, color:"#4a4a4a" }}>last: {describeLog(log)}</div>}
         </div>
         <div style={T.statusLbl(st.color)}>{st.label}</div>
         <div style={T.chevron}>›</div>
@@ -504,6 +600,7 @@ function TacomaHub() {
   function Detail({ t }) {
     const st = getStatus(t, mileage, logs[t.id]);
     const log = logs[t.id];
+    const [pastMi, setPastMi] = useState("");
     return (
       <div>
         <button style={T.backBtn} onClick={() => setTask(null)}>← BACK</button>
@@ -512,13 +609,23 @@ function TacomaHub() {
             <div style={{ flex:1 }}>
               <div style={T.taskTitle}>{CAT_ICONS[t.cat]} {t.name}</div>
               <div style={T.taskInt}>{t.intervalLabel}</div>
-              {log && <div style={T.lastDone}>Last: {log.mileage.toLocaleString()} mi · {new Date(log.date).toLocaleDateString()}</div>}
+              {log && <div style={T.lastDone}>Last: {describeLog(log)}</div>}
             </div>
             <div style={{ textAlign:"right", flexShrink:0 }}>
               <div style={{ ...T.statusLbl(st.color), fontSize:"12px", marginBottom:"8px" }}>● {st.label}</div>
               <button style={T.doneBtn} onClick={() => markDone(t.id)}>✓ MARK DONE</button>
             </div>
           </div>
+          {t.interval > 0 && (
+            <div style={T.pastRow}>
+              <span style={T.pastLabel}>Done before?</span>
+              <input style={T.pastIn} inputMode="numeric" value={pastMi} onChange={e => setPastMi(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && logPast(t.id, parseInt(pastMi.replace(/,/g,""), 10)) && setPastMi("")}
+                placeholder="odometer" aria-label="Mileage when last done" />
+              <button style={T.pastBtn} onClick={() => { if (logPast(t.id, parseInt(pastMi.replace(/,/g,""), 10))) setPastMi(""); }}>LOG</button>
+              <button style={T.pastBtn} onClick={() => logPast(t.id, 0)}>NEVER DONE</button>
+            </div>
+          )}
         </div>
 
         {t.torque?.length > 0 && (
@@ -607,11 +714,13 @@ function TacomaHub() {
       {showSettings && (
         <div style={T.modal} onClick={e => e.target === e.currentTarget && setShowSettings(false)}>
           <div style={T.modalBox}>
-            <div style={T.modalTitle}>⚙ API Key Setup</div>
+            <div style={T.modalTitle}>⚙ Settings</div>
+            <div style={T.setSec}>
+            <div style={T.secTitle}>AI WRENCH — CLOUD KEY</div>
             <div style={T.modalSub}>
-              Your key is stored locally on this device only — never transmitted anywhere except directly to Anthropic's API.<br /><br />
+              Needs a signal. Your key is stored on this device only — never transmitted anywhere except directly to Anthropic's API.<br /><br />
               Get a free key at <a href="https://console.anthropic.com" target="_blank" style={T.link}>console.anthropic.com</a> → API Keys → Create key.<br />
-              Pay-per-use. AI chat costs fractions of a cent per conversation.
+              Set a monthly spend limit in the console too.
             </div>
             <input
               style={T.modalInput}
@@ -624,13 +733,29 @@ function TacomaHub() {
             />
             <div>
               <button style={T.modalBtn} onClick={saveApiKey}>SAVE KEY</button>
-              <button style={T.modalCancel} onClick={() => setShowSettings(false)}>CANCEL</button>
             </div>
             {apiKey && (
               <button style={T.modalClear} onClick={clearApiKey}>
                 Clear saved key
               </button>
             )}
+            </div>
+
+            <div style={T.setSec}>
+              <div style={T.secTitle}>SERVICE LOG BACKUP</div>
+              <div style={T.modalSub}>
+                Export a file, then import it on your other device. Imports merge: for each task the
+                higher-mileage record wins and nothing is deleted. The API key is never included.
+              </div>
+              <div style={T.setRow}>
+                <button style={T.modalBtn} onClick={exportLog}>EXPORT LOG</button>
+                <button style={T.modalCancel} onClick={() => importRef.current && importRef.current.click()}>IMPORT BACKUP</button>
+              </div>
+              <input ref={importRef} type="file" accept="application/json,.json" style={{ display:"none" }} onChange={importLog} />
+              {backupMsg && <div style={T.statusLine("#f5a623")}>{backupMsg}</div>}
+            </div>
+
+            <button style={T.modalDone} onClick={() => setShowSettings(false)}>DONE</button>
           </div>
         </div>
       )}
@@ -643,7 +768,7 @@ function TacomaHub() {
             <div style={T.title}>2019 Tacoma TRD Sport</div>
             <div style={T.sub}>3.5L V6 · 6-Speed Auto · 4WD</div>
           </div>
-          <button style={T.settingsBtn} onClick={() => { setApiKeyInput(""); setShowSettings(true); }} title={apiKey ? "API key set ✓" : "Set API key"}>
+          <button style={T.settingsBtn} onClick={() => { setApiKeyInput(""); setBackupMsg(""); setShowSettings(true); }} title={apiKey ? "API key set ✓" : "Set API key"}>
             {apiKey ? "⚙✓" : "⚙"}
           </button>
         </div>
@@ -670,6 +795,9 @@ function TacomaHub() {
         {tab === "schedule" && (
           <div>
             {!mileage && <div style={T.warn}>⚠ Enter your current mileage above to see maintenance status</div>}
+            {mileage > 0 && unlogged > 0 && (
+              <div style={T.hint}>{unlogged} {unlogged === 1 ? "task has" : "tasks have"} no service record, so {unlogged === 1 ? "it can't" : "they can't"} show as overdue. Open one and log when it was last done, or tap Never done.</div>
+            )}
             {sorted.map(t => <TaskHover key={t.id} t={t} />)}
             <div style={{ padding:"12px 16px", borderTop:"1px solid #1a1a1a" }}>
               <a href="https://www.youtube.com/playlist?list=PLn_AlHagLpdUbx1L2CmpYDTtIHlQOMwoA" target="_blank" rel="noopener noreferrer"

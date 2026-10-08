@@ -235,6 +235,54 @@ function getStatus(task, mileage, log) {
     color: "#22c55e"
   };
 }
+function describeLog(log) {
+  if (log.baseline && log.mileage === 0) return "factory original";
+  const d = log.date ? new Date(log.date) : null;
+  const when = d && !isNaN(d.getTime()) ? d.toLocaleDateString() : "date not recorded";
+  return log.mileage.toLocaleString() + " mi · " + when;
+}
+function buildBackup(mileage, logs) {
+  return {
+    app: "tacoma-world",
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    mileage,
+    logs
+  };
+}
+function mergeBackup(current, incoming, taskIds) {
+  if (!incoming || incoming.app !== "tacoma-world" || !incoming.logs || typeof incoming.logs !== "object") {
+    throw new Error("That file isn't a Tacoma World backup.");
+  }
+  const logs = {
+    ...current.logs
+  };
+  let added = 0,
+    updated = 0;
+  for (const id of Object.keys(incoming.logs)) {
+    const r = incoming.logs[id];
+    if (!taskIds.includes(id) || !r || !Number.isFinite(r.mileage) || r.mileage < 0) continue;
+    const rec = {
+      mileage: Math.floor(r.mileage),
+      date: typeof r.date === "string" ? r.date : null
+    };
+    if (r.baseline === true) rec.baseline = true;
+    if (!logs[id]) {
+      logs[id] = rec;
+      added++;
+    } else if (rec.mileage > logs[id].mileage) {
+      logs[id] = rec;
+      updated++;
+    }
+  }
+  const inMi = Number.isFinite(incoming.mileage) && incoming.mileage > 0 ? Math.floor(incoming.mileage) : 0;
+  return {
+    mileage: Math.max(current.mileage || 0, inMi),
+    logs,
+    added,
+    updated
+  };
+}
 function TacomaHub() {
   const [tab, setTab] = useState("schedule");
   const [mileage, setMileage] = useState(0);
@@ -252,6 +300,8 @@ function TacomaHub() {
   const [apiKey, setApiKey] = useState(() => localStorage.getItem("taco-apikey") || "");
   const [showSettings, setShowSettings] = useState(false);
   const [apiKeyInput, setApiKeyInput] = useState("");
+  const [backupMsg, setBackupMsg] = useState("");
+  const importRef = useRef(null);
   const chatEnd = useRef(null);
   useEffect(() => {
     const m = localStorage.getItem("taco-mi");
@@ -267,6 +317,11 @@ function TacomaHub() {
     }
   }, []);
   useEffect(() => {
+    try {
+      navigator.storage?.persist?.().catch(() => {});
+    } catch (e) {}
+  }, []);
+  useEffect(() => {
     chatEnd.current?.scrollIntoView({
       behavior: "smooth"
     });
@@ -278,20 +333,99 @@ function TacomaHub() {
       localStorage.setItem("taco-mi", String(n));
     }
   };
+  const saveLogs = updated => {
+    setLogs(updated);
+    localStorage.setItem("taco-log", JSON.stringify(updated));
+  };
   const markDone = id => {
     if (!mileage) {
       alert("Set your current mileage first.");
       return;
     }
-    const updated = {
+    saveLogs({
       ...logs,
       [id]: {
         mileage,
         date: new Date().toISOString()
       }
-    };
-    setLogs(updated);
-    localStorage.setItem("taco-log", JSON.stringify(updated));
+    });
+  };
+  const logPast = (id, mi) => {
+    if (!Number.isFinite(mi) || mi < 0) {
+      alert("Enter the odometer reading from when it was last done.");
+      return false;
+    }
+    if (mileage && mi > mileage) {
+      alert(`That's higher than the current mileage (${mileage.toLocaleString()} mi).`);
+      return false;
+    }
+    saveLogs({
+      ...logs,
+      [id]: {
+        mileage: Math.floor(mi),
+        date: null,
+        baseline: true
+      }
+    });
+    return true;
+  };
+  const exportLog = async () => {
+    const data = JSON.stringify(buildBackup(mileage, logs), null, 2);
+    const name = `tacoma-world-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    try {
+      const file = new File([data], name, {
+        type: "application/json"
+      });
+      if (navigator.canShare && navigator.canShare({
+        files: [file]
+      })) {
+        await navigator.share({
+          files: [file],
+          title: "Tacoma World backup"
+        });
+        setBackupMsg("Backup shared.");
+        return;
+      }
+    } catch (e) {
+      if (e && e.name === "AbortError") return;
+    }
+    const url = URL.createObjectURL(new Blob([data], {
+      type: "application/json"
+    }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    setBackupMsg(`Saved ${name}.`);
+  };
+  const importLog = async e => {
+    const f = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!f) return;
+    try {
+      let incoming;
+      try {
+        incoming = JSON.parse(await f.text());
+      } catch (err) {
+        throw new Error("That file isn't a Tacoma World backup.");
+      }
+      const res = mergeBackup({
+        mileage,
+        logs
+      }, incoming, TASKS.map(t => t.id));
+      saveLogs(res.logs);
+      if (res.mileage > mileage) {
+        setMileage(res.mileage);
+        setMileInput(String(res.mileage));
+        localStorage.setItem("taco-mi", String(res.mileage));
+      }
+      setBackupMsg(`Imported: ${res.added} new, ${res.updated} updated. Records already here with higher mileage were kept.`);
+    } catch (err) {
+      setBackupMsg("Import failed. " + err.message);
+    }
   };
   const saveApiKey = () => {
     const k = apiKeyInput.trim();
@@ -376,6 +510,7 @@ function TacomaHub() {
     };
     return order[getStatus(a, mileage, logs[a.id]).status] - order[getStatus(b, mileage, logs[b.id]).status];
   });
+  const unlogged = TASKS.filter(t => t.interval > 0 && !logs[t.id]).length;
   const filtered = TASKS.filter(t => t.name.toLowerCase().includes(search.toLowerCase()) || t.cat.toLowerCase().includes(search.toLowerCase()));
   const T = {
     wrap: {
@@ -820,7 +955,9 @@ function TacomaHub() {
       padding: "24px",
       width: "100%",
       maxWidth: "440px",
-      margin: "16px"
+      margin: "16px",
+      maxHeight: "90%",
+      overflowY: "auto"
     },
     modalTitle: {
       fontFamily: "Impact, sans-serif",
@@ -893,6 +1030,78 @@ function TacomaHub() {
     },
     divider: {
       height: "16px"
+    },
+    hint: {
+      padding: "10px 16px",
+      background: "#121212",
+      borderBottom: "1px solid #1e1e1e",
+      color: "#9a9a9a",
+      fontSize: "12px",
+      lineHeight: 1.5
+    },
+    pastRow: {
+      display: "flex",
+      alignItems: "center",
+      gap: "6px",
+      flexWrap: "wrap",
+      marginTop: "12px",
+      paddingTop: "10px",
+      borderTop: "1px solid #222"
+    },
+    pastLabel: {
+      fontFamily: "'Courier New', monospace",
+      fontSize: "11px",
+      color: "#888",
+      marginRight: "2px"
+    },
+    pastIn: {
+      background: "#0d0d0d",
+      border: "1px solid #2a2a2a",
+      borderRadius: "4px",
+      color: "#f0f0f0",
+      fontFamily: "'Courier New', monospace",
+      padding: "5px 8px",
+      width: "110px"
+    },
+    pastBtn: {
+      background: "transparent",
+      border: "1px solid #333",
+      borderRadius: "3px",
+      color: "#bbb",
+      fontFamily: "Impact, sans-serif",
+      letterSpacing: "0.06em",
+      fontSize: "12px",
+      padding: "5px 10px",
+      cursor: "pointer"
+    },
+    setSec: {
+      marginTop: "18px"
+    },
+    setRow: {
+      display: "flex",
+      gap: "8px",
+      flexWrap: "wrap",
+      alignItems: "center"
+    },
+    statusLine: c => ({
+      fontFamily: "'Courier New', monospace",
+      fontSize: "11px",
+      color: c,
+      marginTop: "10px",
+      lineHeight: 1.6
+    }),
+    modalDone: {
+      background: "transparent",
+      border: "1px solid #333",
+      borderRadius: "4px",
+      color: "#f0f0f0",
+      fontFamily: "Impact, sans-serif",
+      letterSpacing: "0.06em",
+      fontSize: "14px",
+      padding: "9px 20px",
+      cursor: "pointer",
+      marginTop: "20px",
+      width: "100%"
     }
   };
   function TaskHover({
@@ -923,9 +1132,9 @@ function TacomaHub() {
     }, CAT_ICONS[t.cat], " ", t.cat, " \xB7 ", t.intervalLabel), log && React.createElement("div", {
       style: {
         ...T.tSub,
-        color: "#3a3a3a"
+        color: "#4a4a4a"
       }
-    }, "last: ", log.mileage.toLocaleString(), " mi \xB7 ", new Date(log.date).toLocaleDateString())), React.createElement("div", {
+    }, "last: ", describeLog(log))), React.createElement("div", {
       style: T.statusLbl(st.color)
     }, st.label), React.createElement("div", {
       style: T.chevron
@@ -936,6 +1145,7 @@ function TacomaHub() {
   }) {
     const st = getStatus(t, mileage, logs[t.id]);
     const log = logs[t.id];
+    const [pastMi, setPastMi] = useState("");
     return React.createElement("div", null, React.createElement("button", {
       style: T.backBtn,
       onClick: () => setTask(null)
@@ -958,7 +1168,7 @@ function TacomaHub() {
       style: T.taskInt
     }, t.intervalLabel), log && React.createElement("div", {
       style: T.lastDone
-    }, "Last: ", log.mileage.toLocaleString(), " mi \xB7 ", new Date(log.date).toLocaleDateString())), React.createElement("div", {
+    }, "Last: ", describeLog(log))), React.createElement("div", {
       style: {
         textAlign: "right",
         flexShrink: 0
@@ -972,7 +1182,27 @@ function TacomaHub() {
     }, "\u25CF ", st.label), React.createElement("button", {
       style: T.doneBtn,
       onClick: () => markDone(t.id)
-    }, "\u2713 MARK DONE")))), t.torque?.length > 0 && React.createElement("div", {
+    }, "\u2713 MARK DONE"))), t.interval > 0 && React.createElement("div", {
+      style: T.pastRow
+    }, React.createElement("span", {
+      style: T.pastLabel
+    }, "Done before?"), React.createElement("input", {
+      style: T.pastIn,
+      inputMode: "numeric",
+      value: pastMi,
+      onChange: e => setPastMi(e.target.value),
+      onKeyDown: e => e.key === "Enter" && logPast(t.id, parseInt(pastMi.replace(/,/g, ""), 10)) && setPastMi(""),
+      placeholder: "odometer",
+      "aria-label": "Mileage when last done"
+    }), React.createElement("button", {
+      style: T.pastBtn,
+      onClick: () => {
+        if (logPast(t.id, parseInt(pastMi.replace(/,/g, ""), 10))) setPastMi("");
+      }
+    }, "LOG"), React.createElement("button", {
+      style: T.pastBtn,
+      onClick: () => logPast(t.id, 0)
+    }, "NEVER DONE"))), t.torque?.length > 0 && React.createElement("div", {
       style: T.sec
     }, React.createElement("div", {
       style: T.secTitle
@@ -1074,13 +1304,17 @@ function TacomaHub() {
     style: T.modalBox
   }, React.createElement("div", {
     style: T.modalTitle
-  }, "\u2699 API Key Setup"), React.createElement("div", {
+  }, "\u2699 Settings"), React.createElement("div", {
+    style: T.setSec
+  }, React.createElement("div", {
+    style: T.secTitle
+  }, "AI WRENCH \u2014 CLOUD KEY"), React.createElement("div", {
     style: T.modalSub
-  }, "Your key is stored locally on this device only \u2014 never transmitted anywhere except directly to Anthropic's API.", React.createElement("br", null), React.createElement("br", null), "Get a free key at ", React.createElement("a", {
+  }, "Needs a signal. Your key is stored on this device only \u2014 never transmitted anywhere except directly to Anthropic's API.", React.createElement("br", null), React.createElement("br", null), "Get a free key at ", React.createElement("a", {
     href: "https://console.anthropic.com",
     target: "_blank",
     style: T.link
-  }, "console.anthropic.com"), " \u2192 API Keys \u2192 Create key.", React.createElement("br", null), "Pay-per-use. AI chat costs fractions of a cent per conversation."), React.createElement("input", {
+  }, "console.anthropic.com"), " \u2192 API Keys \u2192 Create key.", React.createElement("br", null), "Set a monthly spend limit in the console too."), React.createElement("input", {
     style: T.modalInput,
     type: "password",
     value: apiKeyInput,
@@ -1091,13 +1325,37 @@ function TacomaHub() {
   }), React.createElement("div", null, React.createElement("button", {
     style: T.modalBtn,
     onClick: saveApiKey
-  }, "SAVE KEY"), React.createElement("button", {
-    style: T.modalCancel,
-    onClick: () => setShowSettings(false)
-  }, "CANCEL")), apiKey && React.createElement("button", {
+  }, "SAVE KEY")), apiKey && React.createElement("button", {
     style: T.modalClear,
     onClick: clearApiKey
-  }, "Clear saved key"))), React.createElement("div", {
+  }, "Clear saved key")), React.createElement("div", {
+    style: T.setSec
+  }, React.createElement("div", {
+    style: T.secTitle
+  }, "SERVICE LOG BACKUP"), React.createElement("div", {
+    style: T.modalSub
+  }, "Export a file, then import it on your other device. Imports merge: for each task the higher-mileage record wins and nothing is deleted. The API key is never included."), React.createElement("div", {
+    style: T.setRow
+  }, React.createElement("button", {
+    style: T.modalBtn,
+    onClick: exportLog
+  }, "EXPORT LOG"), React.createElement("button", {
+    style: T.modalCancel,
+    onClick: () => importRef.current && importRef.current.click()
+  }, "IMPORT BACKUP")), React.createElement("input", {
+    ref: importRef,
+    type: "file",
+    accept: "application/json,.json",
+    style: {
+      display: "none"
+    },
+    onChange: importLog
+  }), backupMsg && React.createElement("div", {
+    style: T.statusLine("#f5a623")
+  }, backupMsg)), React.createElement("button", {
+    style: T.modalDone,
+    onClick: () => setShowSettings(false)
+  }, "DONE"))), React.createElement("div", {
     style: T.hdr
   }, React.createElement("div", {
     style: T.truckRow
@@ -1115,6 +1373,7 @@ function TacomaHub() {
     style: T.settingsBtn,
     onClick: () => {
       setApiKeyInput("");
+      setBackupMsg("");
       setShowSettings(true);
     },
     title: apiKey ? "API key set ✓" : "Set API key"
@@ -1157,7 +1416,9 @@ function TacomaHub() {
     style: T.content
   }, tab === "schedule" && React.createElement("div", null, !mileage && React.createElement("div", {
     style: T.warn
-  }, "\u26A0 Enter your current mileage above to see maintenance status"), sorted.map(t => React.createElement(TaskHover, {
+  }, "\u26A0 Enter your current mileage above to see maintenance status"), mileage > 0 && unlogged > 0 && React.createElement("div", {
+    style: T.hint
+  }, unlogged, " ", unlogged === 1 ? "task has" : "tasks have", " no service record, so ", unlogged === 1 ? "it can't" : "they can't", " show as overdue. Open one and log when it was last done, or tap Never done."), sorted.map(t => React.createElement(TaskHover, {
     key: t.id,
     t: t
   })), React.createElement("div", {
