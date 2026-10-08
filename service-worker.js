@@ -10,7 +10,7 @@
  * serving the old build from cache.
  */
 
-const SHELL_VERSION = "tacoma-world-public-shell-v1";
+const SHELL_VERSION = "tacoma-world-public-shell-v2";
 
 const SHELL = [
   "/",

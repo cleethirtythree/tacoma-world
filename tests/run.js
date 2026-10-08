@@ -9,6 +9,7 @@ const { report } = require("./harness");
 require("./pwa-contract.test.js");
 require("./vehicle-contract.test.js");
 require("./schedule-contract.test.js");
+require("./ai-contract.test.js");
 
 const summary = report();
 

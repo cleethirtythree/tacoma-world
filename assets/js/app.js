@@ -171,7 +171,7 @@ SPECS: Engine 3.5L V6 2GR-FKS (D-4S) | Oil 6.1-6.2 qts 0W-20 ILSAC GF-5 | Trans 
 TRIM IS TRD SPORT, NOT TRD PRO. This matters constantly - Pro specs will be wrong.
 
 COMPLETE TORQUE & SPEC REFERENCE:
-OIL CHANGE (5k-10k mi): Drain plug 30lb-ft/14mm | Filter cap 18lb-ft/TOY640 | Filter drain plug 10lb-ft/3/8"sq | Under cover 22lb-ft/12mm. Parts: Oil #00279-0WQTE-01, Drain gasket #90430-12031, Filter #04152-YZZA1. Note: TOY640 filter socket essential. Filter housing is permanent. Must remove skid plate.
+OIL CHANGE (5k-10k mi): Drain plug 30lb-ft/14mm | Filter cap 18lb-ft/TOY640 | Filter drain plug 10lb-ft/3/8"sq | Under cover 22lb-ft/12mm. Parts: Oil #00279-0WQTE-01, Drain gasket #90430-12031, Filter #04152-YZZA1. Note: TOY640 filter socket essential. Filter housing is permanent. Must remove the engine under-cover (the Sport has no skid plate).
 TIRE ROTATION (5k): Lug nuts 83lb-ft/21mm | Front-to-back same side | Re-check at 1k mi
 PROP SHAFT LUBE (15k): NLGI #2 lithium grease. Grease until purges all 4 seals evenly. 4WD only has zerks.
 PROP SHAFT TORQUE (15k): U-joint flanges 65lb-ft 14/17mm BOX-END ONLY | Center bearing 27lb-ft. Xfer case: 17mm bolt/14mm nut. Diffs: 14mm/14mm.
@@ -192,6 +192,7 @@ RECALLS TO CHECK BY VIN at toyota.com/recall: low-pressure fuel pump NHTSA 20V-0
 KEY TIPS: The Sport has a lightweight engine UNDER-COVER, not a TRD skid plate - remove it (4x 12mm bolts, 22 lb-ft on reinstall) for oil and diff work. TOY640 filter socket essential. Team Oil Drop YouTube: https://www.youtube.com/playlist?list=PLn_AlHagLpdUbx1L2CmpYDTtIHlQOMwoA. FSM: https://drive.google.com/open?id=1cx5nnlnCzlhI45D1vbBMj1ni983SKdKf
 
 Multi-step procedures: use numbered steps. Flag safety-critical items clearly. Always include torque specs and part numbers when relevant.`;
+const CLOUD_MODEL = "claude-sonnet-5-5";
 const CAT_ICONS = {
   Engine: "⚙️",
   Wheels: "🔄",
@@ -242,6 +243,7 @@ function TacomaHub() {
   const [task, setTask] = useState(null);
   const [msgs, setMsgs] = useState([{
     role: "assistant",
+    ui: true,
     content: "Ready. Ask me anything about your 2019 Tacoma TRD Sport — torque specs, step-by-step guides, troubleshooting, part numbers.\n\nAt 128,342 mi you are past due on spark plugs and coolant.\n\n⚠️ AI chat needs an Anthropic API key and a signal. Everything else in this app works offline. Add your key via the ⚙ button."
   }]);
   const [inputText, setInputText] = useState("");
@@ -330,20 +332,23 @@ function TacomaHub() {
           "anthropic-dangerous-direct-browser-access": "true"
         },
         body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
+          model: CLOUD_MODEL,
           max_tokens: 1000,
           system: SYS_PROMPT + taskCtx,
-          messages: next.map(m => ({
+          messages: next.filter(m => !m.ui).map(m => ({
             role: m.role,
             content: m.content
           }))
         })
       });
       const d = await r.json();
-      if (d.error) {
+      if (!r.ok || d.error) {
+        const type = d.error?.type || `HTTP ${r.status}`;
+        const hint = type === "authentication_error" ? "\n\nCheck your API key in ⚙ Settings." : "";
         setMsgs(p => [...p, {
           role: "assistant",
-          content: `API Error: ${d.error.message}\n\nCheck your API key in ⚙ Settings.`
+          ui: true,
+          content: `API error (${type}): ${d.error?.message || "no details"}${hint}`
         }]);
       } else {
         const reply = d.content?.find(c => c.type === "text")?.text || "No response received.";
@@ -355,7 +360,8 @@ function TacomaHub() {
     } catch (e) {
       setMsgs(p => [...p, {
         role: "assistant",
-        content: "Connection error. Check your internet connection and try again."
+        ui: true,
+        content: "No connection to Anthropic. Specs and the service log still work offline."
       }]);
     }
     setAiLoading(false);

@@ -129,7 +129,7 @@ suite("Build freshness");
 
 test("the committed bundle was built from the current source", () => {
   // Spot-check identifying strings so a stale bundle cannot ship with fresh source.
-  for (const marker of ["90919-01263", "3TMCZ5AN4KM264896", "WHAT THIS TRUCK DOES NOT HAVE"]) {
+  for (const marker of ["90919-01263", "3TMCZ5AN4KM264896", "WHAT THIS TRUCK DOES NOT HAVE", "claude-sonnet-5-5"]) {
     assertIncludes(
       bundle,
       marker,
