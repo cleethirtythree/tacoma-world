@@ -100,6 +100,18 @@ Verified 2026-08-11. None of these were modified while building this repo:
 Newest first. One short entry per session. If an entry needs more than a few lines, it belongs
 in a doc, not here.
 
+### 2026-10-07 — Claude (Code, desktop) — applied and pushed the 2026-10-07 patch series
+
+Caleb explicitly set aside AI_WORKFLOW.md §2/§4 rule 8 and the CLAUDE.md push restriction for
+this session. Recorded here per rule 11.
+
+- Applied `tacoma-world-2026-10-07.patch` with `git am` (5 commits, clean). `npm run check`:
+  80 passed, 0 failed; the rebuild left `assets/js/app.js` unchanged.
+- The patch's edit to `tests/vehicle-contract.test.js` only adds bundle-freshness markers;
+  no spec guard was weakened.
+- First push failed: this Mac had no git credential. Claude did not handle the token. Caleb
+  set `credential.helper osxkeychain` and pushed from his own Terminal. `origin/main` = `cf7a13c`.
+
 ### 2026-10-07 — Claude (claude.ai chat) — model fix, backup, cyberdeck offline mode
 
 Worked in a sandbox clone; no commit or push to GitHub (AI_WORKFLOW rule 8 respected —
