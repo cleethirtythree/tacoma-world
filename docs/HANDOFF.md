@@ -110,7 +110,7 @@ this session. Recorded here per rule 11.
 - The patch's edit to `tests/vehicle-contract.test.js` only adds bundle-freshness markers;
   no spec guard was weakened.
 - First push failed: this Mac had no git credential. Claude did not handle the token. Caleb
-  set `credential.helper osxkeychain` and pushed from his own Terminal. `origin/main` = `cf7a13c`.
+  set `credential.helper osxkeychain` and pushed from the Terminal. `origin/main` = `cf7a13c`.
 
 ### 2026-10-07 — Claude (claude.ai chat) — model fix, backup, cyberdeck offline mode
 
