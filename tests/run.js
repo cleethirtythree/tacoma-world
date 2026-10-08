@@ -11,6 +11,7 @@ require("./vehicle-contract.test.js");
 require("./schedule-contract.test.js");
 require("./ai-contract.test.js");
 require("./backup-contract.test.js");
+require("./deck-contract.test.js");
 
 const summary = report();
 

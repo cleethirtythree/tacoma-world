@@ -33,6 +33,14 @@
 
 <script>
   if ("serviceWorker" in navigator) {
+    // When a new version takes over, reload once so it actually shows. Skipped on the
+    // very first visit (no previous controller), so first install never reloads.
+    var hadController = !!navigator.serviceWorker.controller, reloading = false;
+    navigator.serviceWorker.addEventListener("controllerchange", function () {
+      if (!hadController || reloading) return;
+      reloading = true;
+      window.location.reload();
+    });
     window.addEventListener("load", function () {
       navigator.serviceWorker.register("/service-worker.js").catch(function (e) {
         console.warn("Service worker registration failed:", e);

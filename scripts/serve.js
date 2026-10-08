@@ -7,6 +7,9 @@
  * so offline behavior cannot be tested that way.
  *
  * Usage:  npm run serve    ->  http://localhost:8600
+ *
+ * The cyberdeck also runs this as a permanent service (deck/setup.sh) with
+ * HOST=127.0.0.1, so the app is reachable only from the deck itself.
  */
 
 const http = require("http");
@@ -15,6 +18,7 @@ const path = require("path");
 
 const ROOT = path.resolve(__dirname, "..");
 const PORT = Number(process.env.PORT) || 8600;
+const HOST = process.env.HOST || undefined; // undefined = all interfaces (dev default)
 
 const TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -33,6 +37,12 @@ http
   .createServer((req, res) => {
     let urlPath = decodeURIComponent(req.url.split("?")[0]);
     if (urlPath === "/") urlPath = "/index.html";
+
+    // Never serve dotfiles or dot-directories (.git, .env, .claude).
+    if (urlPath.split("/").some((seg) => seg.startsWith("."))) {
+      res.writeHead(404, { "Content-Type": "text/plain" });
+      return res.end("404 Not Found");
+    }
 
     // Refuse to serve anything outside the project directory.
     const filePath = path.join(ROOT, urlPath);
@@ -57,7 +67,7 @@ http
       res.end(data);
     });
   })
-  .listen(PORT, () => {
-    console.log("Tacoma World serving at http://localhost:" + PORT);
+  .listen(PORT, HOST, () => {
+    console.log("Tacoma World serving at http://" + (HOST || "localhost") + ":" + PORT);
     console.log("Stop with Ctrl+C. Use this (not file://) to test offline behavior.");
   });
