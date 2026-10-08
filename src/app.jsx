@@ -298,6 +298,57 @@ Multi-step procedures: use numbered steps. Flag safety-critical items clearly. A
 // Guarded by tests/ai-contract.test.js.
 const CLOUD_MODEL = "claude-sonnet-5-5";
 
+// Offline AI for the cyberdeck: a model running on this same computer, reached through the
+// OpenAI-compatible chat API that Ollama, llama.cpp server and LM Studio all expose.
+// Loopback only: chat text never goes to another machine. Guarded by tests/ai-contract.test.js.
+const LOCAL_DEFAULTS = { endpoint:"http://127.0.0.1:11434", model:"llama3.2:3b" };
+const LOCAL_HISTORY = 6; // recent turns sent per question; keeps a small CPU model fast
+
+const LOCAL_PREAMBLE = `You are running as a small offline model on a workbench computer with no internet. Answer ONLY from the reference below. Quote torque values, fluid capacities and part numbers exactly as written there. If a figure is not in the reference, say it is not in the offline reference and tell the user to check the Library tab or the factory service manual. Never guess a torque value. Keep answers short.
+
+`;
+
+const CLOUD_GREETING = "Ready. Ask me anything about your 2019 Tacoma TRD Sport — torque specs, step-by-step guides, troubleshooting, part numbers.\n\nAt 128,342 mi you are past due on spark plugs and coolant.\n\n⚠️ AI chat needs an Anthropic API key and a signal. Everything else in this app works offline. Add your key via the ⚙ button.";
+const LOCAL_GREETING = "Offline mode. Ask me anything about your 2019 Tacoma TRD Sport.\n\nI'm a small model running on this computer with no internet, answering from the specs built into this app. I'm slower than the cloud version and I can be wrong — confirm any torque value in the Library before final torque.\n\nAt 128,342 mi you are past due on spark plugs and coolant.";
+
+function isLoopbackEndpoint(url) {
+  try {
+    const u = new URL(url);
+    return (u.protocol === "http:" || u.protocol === "https:") && ["localhost", "127.0.0.1", "[::1]"].includes(u.hostname);
+  } catch (e) {
+    return false;
+  }
+}
+
+// One line of a streamed (server-sent events) chat response -> the text it adds.
+function parseStreamLine(line) {
+  const s = line.trim();
+  if (!s.startsWith("data:")) return "";
+  const data = s.slice(5).trim();
+  if (!data || data === "[DONE]") return "";
+  try {
+    const j = JSON.parse(data);
+    return (j.choices && j.choices[0] && j.choices[0].delta && j.choices[0].delta.content) || "";
+  } catch (e) {
+    return "";
+  }
+}
+
+// The deck's kiosk opens /?ai=local&endpoint=…&model=… so it boots straight into offline
+// mode. Applied once, saved to this device, then removed from the address bar.
+(function applyLaunchParams() {
+  try {
+    const q = new URLSearchParams(window.location.search);
+    if (!["ai", "endpoint", "model"].some(k => q.has(k))) return;
+    if (q.get("ai") === "local" || q.get("ai") === "cloud") localStorage.setItem("taco-ai", q.get("ai"));
+    const ep = q.get("endpoint");
+    if (ep && isLoopbackEndpoint(ep)) localStorage.setItem("taco-local-endpoint", ep);
+    const m = q.get("model");
+    if (m && /^[\w.:\/-]{1,100}$/.test(m)) localStorage.setItem("taco-local-model", m);
+    window.history.replaceState(null, "", window.location.pathname);
+  } catch (e) {}
+})();
+
 const CAT_ICONS = { Engine:"⚙️", Wheels:"🔄", Drivetrain:"⛓️", Suspension:"🔩", Filters:"🌬️", Brakes:"🛑" };
 
 function getStatus(task, mileage, log) {
@@ -350,9 +401,8 @@ function TacomaHub() {
   const [mileInput, setMileInput] = useState("");
   const [logs, setLogs] = useState({});
   const [task, setTask] = useState(null);
-  const [msgs, setMsgs] = useState([
-    { role:"assistant", ui:true, content:"Ready. Ask me anything about your 2019 Tacoma TRD Sport — torque specs, step-by-step guides, troubleshooting, part numbers.\n\nAt 128,342 mi you are past due on spark plugs and coolant.\n\n⚠️ AI chat needs an Anthropic API key and a signal. Everything else in this app works offline. Add your key via the ⚙ button." }
-  ]);
+  // The greeting is rendered separately (it depends on the AI source) and is never history.
+  const [msgs, setMsgs] = useState([]);
   const [inputText, setInputText] = useState("");
   const [aiLoading, setAiLoading] = useState(false);
   const [search, setSearch] = useState("");
@@ -360,6 +410,15 @@ function TacomaHub() {
   const [showSettings, setShowSettings] = useState(false);
   const [apiKeyInput, setApiKeyInput] = useState("");
   const [backupMsg, setBackupMsg] = useState("");
+  const [provider, setProvider] = useState(() => localStorage.getItem("taco-ai") === "local" ? "local" : "cloud");
+  const [localCfg, setLocalCfg] = useState(() => ({
+    endpoint: localStorage.getItem("taco-local-endpoint") || LOCAL_DEFAULTS.endpoint,
+    model: localStorage.getItem("taco-local-model") || LOCAL_DEFAULTS.model,
+  }));
+  const [endpointInput, setEndpointInput] = useState("");
+  const [modelInput, setModelInput] = useState("");
+  const [localStatus, setLocalStatus] = useState("idle");
+  const localRun = useRef(0);
   const importRef = useRef(null);
   const chatEnd = useRef(null);
 
@@ -447,43 +506,152 @@ function TacomaHub() {
     setApiKeyInput("");
   };
 
+  const chooseProvider = (p) => {
+    setProvider(p);
+    localStorage.setItem("taco-ai", p);
+  };
+
+  const saveLocal = () => {
+    const endpoint = endpointInput.trim().replace(/\/+$/, "");
+    const model = modelInput.trim();
+    if (!isLoopbackEndpoint(endpoint)) { setLocalStatus("badurl"); return; }
+    if (!/^[\w.:\/-]{1,100}$/.test(model)) { setLocalStatus("badmodel"); return; }
+    localStorage.setItem("taco-local-endpoint", endpoint);
+    localStorage.setItem("taco-local-model", model);
+    setLocalCfg({ endpoint, model });
+  };
+
+  // Find the offline model, then load it and cache the reference prompt with a one-token
+  // request, so the first real question doesn't pay that cost.
+  const checkLocal = async (cfg) => {
+    const run = ++localRun.current;
+    const base = cfg.endpoint.replace(/\/+$/, "");
+    if (!isLoopbackEndpoint(base)) { setLocalStatus("badurl"); return; }
+    setLocalStatus("checking");
+    try {
+      const ctl = new AbortController();
+      const timer = setTimeout(() => ctl.abort(), 4000);
+      const r = await fetch(base + "/v1/models", { signal:ctl.signal });
+      clearTimeout(timer);
+      const j = await r.json();
+      if (run !== localRun.current) return;
+      if (!(j.data || []).some(m => m.id === cfg.model)) { setLocalStatus("nomodel"); return; }
+      setLocalStatus("warming");
+      const w = await fetch(base + "/v1/chat/completions", {
+        method:"POST",
+        headers:{ "Content-Type":"application/json" },
+        body: JSON.stringify({ model:cfg.model, stream:false, max_tokens:1,
+          messages:[{ role:"system", content:LOCAL_PREAMBLE + SYS_PROMPT }, { role:"user", content:"Ready?" }] }),
+      });
+      if (run === localRun.current) setLocalStatus(w.ok ? "ready" : "down");
+    } catch (e) {
+      if (run === localRun.current) setLocalStatus("down");
+    }
+  };
+
+  useEffect(() => {
+    if (provider === "local") checkLocal(localCfg);
+    else localRun.current++;
+  }, [provider, localCfg.endpoint, localCfg.model]);
+
+  const sendCloud = async (history, taskCtx) => {
+    const r = await fetch("https://api.anthropic.com/v1/messages", {
+      method:"POST",
+      headers:{
+        "Content-Type":"application/json",
+        "x-api-key": apiKey,
+        "anthropic-version":"2023-06-01",
+        "anthropic-dangerous-direct-browser-access":"true"
+      },
+      body: JSON.stringify({
+        model:CLOUD_MODEL,
+        max_tokens:1000,
+        system: SYS_PROMPT + taskCtx,
+        messages: history
+      })
+    });
+    const d = await r.json();
+    if (!r.ok || d.error) {
+      const type = d.error?.type || `HTTP ${r.status}`;
+      const hint = type === "authentication_error" ? "\n\nCheck your API key in ⚙ Settings." : "";
+      setMsgs(p => [...p, { role:"assistant", ui:true, content:`API error (${type}): ${d.error?.message || "no details"}${hint}` }]);
+    } else {
+      const reply = d.content?.find(c => c.type==="text")?.text || "No response received.";
+      setMsgs(p => [...p, { role:"assistant", content:reply }]);
+    }
+  };
+
+  const sendLocal = async (history, taskCtx) => {
+    const base = localCfg.endpoint.replace(/\/+$/, "");
+    if (!isLoopbackEndpoint(base)) throw new Error("The offline model address must be on this device (localhost).");
+    const recent = history.slice(-LOCAL_HISTORY);
+    while (recent.length && recent[0].role !== "user") recent.shift();
+    const r = await fetch(base + "/v1/chat/completions", {
+      method:"POST",
+      headers:{ "Content-Type":"application/json" },
+      body: JSON.stringify({
+        model:localCfg.model, stream:true, temperature:0.2, max_tokens:700,
+        messages:[{ role:"system", content:LOCAL_PREAMBLE + SYS_PROMPT + taskCtx }, ...recent],
+      }),
+    });
+    if (!r.ok) {
+      const detail = await r.text().catch(() => "");
+      throw new Error(`Offline model error ${r.status}${detail ? ": " + detail.slice(0, 200) : ""}`);
+    }
+    // Stream tokens into one growing bubble; a CPU model is slow and a blank wait feels broken.
+    const show = (t) => setMsgs(p => {
+      const c = p.slice();
+      if (c.length && c[c.length - 1].streaming) c[c.length - 1] = { role:"assistant", content:t, streaming:true };
+      else c.push({ role:"assistant", content:t, streaming:true });
+      return c;
+    });
+    let text = "";
+    if ((r.headers.get("content-type") || "").includes("application/json") || !r.body) {
+      const j = await r.json(); // server ignored stream:true
+      text = j.choices?.[0]?.message?.content || "";
+      if (text) show(text);
+    } else {
+      const reader = r.body.getReader();
+      const dec = new TextDecoder();
+      let buf = "";
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream:true });
+        const lines = buf.split("\n");
+        buf = lines.pop();
+        const added = lines.map(parseStreamLine).join("");
+        if (added) { text += added; show(text); }
+      }
+      const tail = parseStreamLine(buf);
+      if (tail) { text += tail; show(text); }
+    }
+    if (!text) throw new Error("The offline model returned an empty answer.");
+  };
+
   const send = async () => {
     if (!inputText.trim() || aiLoading) return;
-    if (!apiKey) { setShowSettings(true); return; }
+    if (provider === "cloud" && !apiKey) { setShowSettings(true); return; }
     const userMsg = inputText.trim();
     setInputText("");
     const taskCtx = task ? `\n\nUser is viewing the "${task.name}" task.` : "";
     const next = [...msgs, { role:"user", content:userMsg }];
     setMsgs(next);
     setAiLoading(true);
+    // UI-only lines (error notices) are never sent as history.
+    const history = next.filter(m => !m.ui).map(m => ({ role:m.role, content:m.content }));
+    const settle = (p) => p.map(m => m.streaming ? { role:m.role, content:m.content } : m);
     try {
-      const r = await fetch("https://api.anthropic.com/v1/messages", {
-        method:"POST",
-        headers:{
-          "Content-Type":"application/json",
-          "x-api-key": apiKey,
-          "anthropic-version":"2023-06-01",
-          "anthropic-dangerous-direct-browser-access":"true"
-        },
-        body: JSON.stringify({
-          model:CLOUD_MODEL,
-          max_tokens:1000,
-          system: SYS_PROMPT + taskCtx,
-          // UI-only lines (the greeting, error notices) are never sent as history.
-          messages: next.filter(m => !m.ui).map(m => ({ role:m.role, content:m.content }))
-        })
-      });
-      const d = await r.json();
-      if (!r.ok || d.error) {
-        const type = d.error?.type || `HTTP ${r.status}`;
-        const hint = type === "authentication_error" ? "\n\nCheck your API key in ⚙ Settings." : "";
-        setMsgs(p => [...p, { role:"assistant", ui:true, content:`API error (${type}): ${d.error?.message || "no details"}${hint}` }]);
-      } else {
-        const reply = d.content?.find(c => c.type==="text")?.text || "No response received.";
-        setMsgs(p => [...p, { role:"assistant", content:reply }]);
-      }
-    } catch(e) {
-      setMsgs(p => [...p, { role:"assistant", ui:true, content:"No connection to Anthropic. Specs and the service log still work offline." }]);
+      if (provider === "local") await sendLocal(history, taskCtx);
+      else await sendCloud(history, taskCtx);
+      setMsgs(settle);
+    } catch (e) {
+      // Browsers report "server not there" as a TypeError, each with different wording.
+      const unreachable = !e || e.name === "TypeError" || /Failed to fetch|NetworkError|Load failed/i.test(e.message || "");
+      const note = provider === "local"
+        ? (unreachable ? "Can't reach the offline model. On the deck, run: systemctl status ollama" : e.message)
+        : "No connection to Anthropic. Specs and the service log still work offline.";
+      setMsgs(p => [...settle(p), { role:"assistant", ui:true, content:note }]);
     }
     setAiLoading(false);
   };
@@ -500,6 +668,18 @@ function TacomaHub() {
     t.cat.toLowerCase().includes(search.toLowerCase())
   );
 
+  const aiReady = provider === "cloud" ? !!apiKey : localStatus === "ready";
+  const localStatusText = {
+    idle: "Offline model not checked yet.",
+    checking: "Looking for the offline model…",
+    nomodel: `The AI server is running but ${localCfg.model} isn't installed. With internet, run: ollama pull ${localCfg.model}`,
+    warming: "Loading the offline model into memory. The first answer can take a minute or two.",
+    ready: "Offline model ready.",
+    down: `Can't reach the offline model at ${localCfg.endpoint}. On the deck, run: systemctl status ollama`,
+    badurl: "The address must be on this device, e.g. http://127.0.0.1:11434",
+    badmodel: "Enter a model name, e.g. llama3.2:3b",
+  }[localStatus];
+
   const T = {
     wrap:{ background:"#0d0d0d", color:"#f0f0f0", height:"100%", display:"flex", flexDirection:"column", fontSize:"14px" },
     hdr:{ background:"#111", borderBottom:"3px solid #cc0000", padding:"14px 16px", flexShrink:0 },
@@ -507,7 +687,7 @@ function TacomaHub() {
     redBar:{ width:"4px", height:"40px", background:"#cc0000", borderRadius:"2px", flexShrink:0 },
     title:{ fontFamily:"Impact, 'Arial Narrow Bold', sans-serif", fontSize:"22px", letterSpacing:"0.04em", textTransform:"uppercase", lineHeight:1 },
     sub:{ fontFamily:"'Courier New', monospace", fontSize:"11px", color:"#888", letterSpacing:"0.06em", textTransform:"uppercase", marginTop:"3px" },
-    settingsBtn:{ marginLeft:"auto", background:"transparent", border:"1px solid #2a2a2a", borderRadius:"4px", color: apiKey ? "#22c55e" : "#666", fontSize:"16px", padding:"5px 9px", cursor:"pointer" },
+    settingsBtn:{ marginLeft:"auto", background:"transparent", border:"1px solid #2a2a2a", borderRadius:"4px", color: aiReady ? "#22c55e" : "#666", fontSize:"16px", padding:"5px 9px", cursor:"pointer" },
     mileRow:{ display:"flex", alignItems:"center", gap:"8px", flexWrap:"wrap" },
     mileLabel:{ fontFamily:"'Courier New', monospace", fontSize:"11px", color:"#666", textTransform:"uppercase", letterSpacing:"0.06em" },
     mileIn:{ background:"#1a1a1a", border:"1px solid #2a2a2a", borderRadius:"4px", color:"#f0f0f0", fontFamily:"'Courier New', monospace", fontSize:"13px", padding:"5px 10px", width:"110px" },
@@ -571,6 +751,8 @@ function TacomaHub() {
     setSec:{ marginTop:"18px" },
     setRow:{ display:"flex", gap:"8px", flexWrap:"wrap", alignItems:"center" },
     statusLine:(c) => ({ fontFamily:"'Courier New', monospace", fontSize:"11px", color:c, marginTop:"10px", lineHeight:1.6 }),
+    seg:(a) => ({ flex:1, background: a ? "#cc0000" : "transparent", border: a ? "1px solid #cc0000" : "1px solid #333", borderRadius:"4px", color: a ? "#fff" : "#888", fontFamily:"Impact, sans-serif", letterSpacing:"0.06em", fontSize:"14px", padding:"9px 12px", cursor:"pointer" }),
+    offlineBanner:{ padding:"7px 16px", background:"#1a1200", borderBottom:"1px solid #2a2000", fontSize:"11px", color:"#f5a623", fontFamily:"'Courier New', monospace", flexShrink:0 },
     modalDone:{ background:"transparent", border:"1px solid #333", borderRadius:"4px", color:"#f0f0f0", fontFamily:"Impact, sans-serif", letterSpacing:"0.06em", fontSize:"14px", padding:"9px 20px", cursor:"pointer", marginTop:"20px", width:"100%" },
   };
 
@@ -716,7 +898,30 @@ function TacomaHub() {
           <div style={T.modalBox}>
             <div style={T.modalTitle}>⚙ Settings</div>
             <div style={T.setSec}>
-            <div style={T.secTitle}>AI WRENCH — CLOUD KEY</div>
+            <div style={T.secTitle}>AI WRENCH SOURCE</div>
+            <div style={{ ...T.setRow, marginBottom:"12px" }}>
+              <button style={T.seg(provider === "cloud")} onClick={() => chooseProvider("cloud")}>CLOUD</button>
+              <button style={T.seg(provider === "local")} onClick={() => chooseProvider("local")}>OFFLINE</button>
+            </div>
+            {provider === "local" ? (
+              <div>
+                <div style={T.modalSub}>
+                  Uses a model running on this computer. No internet needed. This is for the
+                  cyberdeck; a phone can't run the model. It's slower and less reliable than
+                  cloud, so confirm torque values in the Library.
+                </div>
+                <input style={T.modalInput} value={endpointInput} onChange={e => setEndpointInput(e.target.value)}
+                  placeholder={LOCAL_DEFAULTS.endpoint} aria-label="Offline model address" />
+                <input style={T.modalInput} value={modelInput} onChange={e => setModelInput(e.target.value)}
+                  onKeyDown={e => e.key === "Enter" && saveLocal()} placeholder={LOCAL_DEFAULTS.model} aria-label="Offline model name" />
+                <div style={T.setRow}>
+                  <button style={T.modalBtn} onClick={saveLocal}>SAVE</button>
+                  <button style={T.modalCancel} onClick={() => checkLocal(localCfg)}>CHECK AGAIN</button>
+                </div>
+                <div style={T.statusLine(localStatus === "ready" ? "#22c55e" : "#f5a623")}>{localStatusText}</div>
+              </div>
+            ) : (
+            <div>
             <div style={T.modalSub}>
               Needs a signal. Your key is stored on this device only — never transmitted anywhere except directly to Anthropic's API.<br /><br />
               Get a free key at <a href="https://console.anthropic.com" target="_blank" style={T.link}>console.anthropic.com</a> → API Keys → Create key.<br />
@@ -729,7 +934,7 @@ function TacomaHub() {
               onChange={e => setApiKeyInput(e.target.value)}
               onKeyDown={e => e.key === "Enter" && saveApiKey()}
               placeholder="sk-ant-api03-..."
-              autoFocus
+              aria-label="Anthropic API key"
             />
             <div>
               <button style={T.modalBtn} onClick={saveApiKey}>SAVE KEY</button>
@@ -738,6 +943,8 @@ function TacomaHub() {
               <button style={T.modalClear} onClick={clearApiKey}>
                 Clear saved key
               </button>
+            )}
+            </div>
             )}
             </div>
 
@@ -768,8 +975,8 @@ function TacomaHub() {
             <div style={T.title}>2019 Tacoma TRD Sport</div>
             <div style={T.sub}>3.5L V6 · 6-Speed Auto · 4WD</div>
           </div>
-          <button style={T.settingsBtn} onClick={() => { setApiKeyInput(""); setBackupMsg(""); setShowSettings(true); }} title={apiKey ? "API key set ✓" : "Set API key"}>
-            {apiKey ? "⚙✓" : "⚙"}
+          <button style={T.settingsBtn} onClick={() => { setApiKeyInput(""); setBackupMsg(""); setEndpointInput(localCfg.endpoint); setModelInput(localCfg.model); setShowSettings(true); }} title={aiReady ? "AI ready ✓" : "Settings"} aria-label="Settings">
+            {aiReady ? "⚙✓" : "⚙"}
           </button>
         </div>
         <div style={{ display:"flex", alignItems:"center", gap:"8px", flexWrap:"wrap" }}>
@@ -820,18 +1027,23 @@ function TacomaHub() {
 
         {tab === "wrench" && (
           <div style={T.chatWrap}>
+            {provider === "local" && <div style={T.offlineBanner}>OFFLINE AI · {localCfg.model} · confirm torque values in the Library</div>}
             {task && <div style={T.ctxBanner}>CONTEXT: {task.name}</div>}
-            {!apiKey && (
+            {provider === "local" && localStatus !== "ready" && <div style={T.noKey}>{localStatusText}</div>}
+            {provider === "cloud" && !apiKey && (
               <div style={T.noKey}>
                 ⚙ No API key set. Click the ⚙ button in the header to add your Anthropic API key.<br />
                 Get one free at console.anthropic.com — pay per use, fractions of a cent per chat.
               </div>
             )}
             <div style={T.chatMsgs}>
+              <div style={T.aiBub}>{provider === "local" ? LOCAL_GREETING : CLOUD_GREETING}</div>
               {msgs.map((m,i) => (
                 <div key={i} style={m.role==="user" ? T.userBub : T.aiBub}>{m.content}</div>
               ))}
-              {aiLoading && <div style={T.typingBub}>⟳  Thinking...</div>}
+              {aiLoading && msgs[msgs.length - 1]?.role === "user" && (
+                <div style={T.typingBub}>⟳  Thinking...{provider === "local" ? " (offline model: this can take a minute)" : ""}</div>
+              )}
               <div ref={chatEnd} />
             </div>
             <div style={T.quickBar}>
@@ -845,7 +1057,7 @@ function TacomaHub() {
                 value={inputText}
                 onChange={e => setInputText(e.target.value)}
                 onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }}}
-                placeholder={apiKey ? "Ask anything about your Tacoma... (Enter to send)" : "Add API key via ⚙ to enable AI chat"}
+                placeholder={provider === "local" ? "Ask the offline mechanic... (Enter to send)" : apiKey ? "Ask anything about your Tacoma... (Enter to send)" : "Add API key via ⚙ to enable AI chat"}
                 rows={2}
               />
               <button style={T.sendBtn} onClick={send} disabled={aiLoading}>SEND</button>
