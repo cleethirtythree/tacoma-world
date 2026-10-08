@@ -16,51 +16,61 @@ PROJECT:
   cyberdeck (local AI, assumes no Wi-Fi).
 
 REPOSITORY / BRANCH / HEAD:
-  main — this session adds 5 commits on top of e2e0f47, delivered as a patch
-  series for Caleb to apply with `git am` and push. Verify with `git log`.
+  main. The 2026-10-07 patch series is pushed (origin/main b965663 before this
+  session's voice work). The voice feature is written to the working copy,
+  ready to commit. Verify with `git log` and `git status`.
   github.com/cleethirtythree/tacoma-world (public) -> Vercel "tacoma-world"
 
 LIVE URL:
   https://tacoma-world.vercel.app  (auto-deploys on push to main)
 
 CURRENT OBJECTIVE:
-  1. Push this series so the live site gets the model fix.
+  1. Commit + push the voice feature; try it on the iPhone (device voice first,
+     then ElevenLabs with a real key).
   2. Phase 2 on the iPhone (PHASE_PLAN.md, steps 3-7).
   3. Phase 4 on the Pi 5 (docs/CYBERDECK.md, PHASE_PLAN.md acceptance 1-5).
 
 SOURCE PRECEDENCE:
   unchanged — see REUSE_MATRIX.md. Vehicle facts: the TRD Sport reference.
 
-VERIFIED WORKING BEHAVIOR (2026-10-07, claude.ai sandbox — no browser, no Pi):
-  80/80 contract tests pass (npm run check)
-  43 UI checks against the compiled bundle in jsdom: baseline logging, export,
-    import merge, offline AI streaming against a mock OpenAI-compatible server,
-    warm-up, launch params, loopback rejection, missing-model and dead-server
-    messages, cloud request shape, auth-error handling
-  deck/setup.sh dry-run with stubbed apt/systemctl/sudo and real HTTP mocks:
-    completes, idempotent on re-run, kiosk launches the offline URL
-  scripts/serve.js returns 404 for /.git, /.env and encoded traversal
-  shellcheck clean on deck/*.sh
+VERIFIED WORKING BEHAVIOR (2026-10-07, Claude Code on Caleb's Mac, Chromium preview):
+  97/97 contract tests pass (npm run check), 17 of them new in voice-contract
+  Voice, with Anthropic and ElevenLabs responses stubbed in the page:
+    toggle on -> answer auto-read by device voice, units spoken as words,
+    markdown/URLs dropped; STOP shown while reading, cleared after
+    ElevenLabs path: one request to api.elevenlabs.io with only {text, model_id}
+    and the xi-api-key header; audio played from a blob; device voice silent
+    ElevenLabs 401 -> clear message + device voice reads instead
+    layout checked at 375px; no console errors
+  Offline: server stopped (curl refused), app reloaded from shell-v6 cache
+  From the claude.ai session (earlier 2026-10-07): 43 jsdom UI checks, deck
+    dry-run, serve.js dotfile 404s, shellcheck clean
 
-NOT VERIFIED — needs hardware:
-  - any real Claude API call (no network to Anthropic from the sandbox)
+NOT VERIFIED — needs hardware or real keys:
+  - any real ElevenLabs call (no key used); real Claude call on the live site
+  - iOS audio unlock: answers arrive seconds after the Send tap; the app
+    "unlocks" audio on the tap (silent clip + silent utterance). If iPhone still
+    blocks it, the message says to tap ▶ READ, which always works.
+  - iPhone: audio stops when the screen locks or the app is backgrounded
   - iPhone install, share-sheet export, file-picker import
-  - Raspberry Pi: Ollama install, real model output, speed, kiosk autostart,
-    raspi-config codes (do_wayland W3, do_boot_behaviour B4, do_blanking 1)
+  - Raspberry Pi: Ollama, real model output, speed, kiosk autostart,
+    device voice on Pi OS (needs a speech engine such as speech-dispatcher)
 
-FILES CHANGED:
-  src/app.jsx, assets/js/app.js (generated), service-worker.js (v1 -> v5),
-  index.html, scripts/serve.js, deck/{setup,kiosk,update}.sh,
-  tests/{extract,ai-contract,backup-contract,deck-contract}.test.js + run.js,
-  tests/vehicle-contract.test.js (freshness markers), README, CLAUDE.md,
-  AGENTS.md, docs/{CYBERDECK,PRODUCT_CONTRACT,ARCHITECTURE,PHASE_PLAN,HANDOFF}.md
+FILES CHANGED (voice session):
+  src/app.jsx, assets/js/app.js (generated), service-worker.js (v5 -> v6),
+  vercel.json (CSP), tests/voice-contract.test.js (new), tests/run.js,
+  tests/pwa-contract.test.js (CSP check now exact),
+  docs/{PRODUCT_CONTRACT (v1.2),ARCHITECTURE,HANDOFF}.md
 
 SECURITY / DATA INVARIANTS:
   - service worker caches ONLY the public shell; never any API
-  - no API key in the repo (test-enforced); the backup file never contains it
-  - production CSP unchanged: connect-src 'self' https://api.anthropic.com
+  - no API key in the repo (test-enforced: sk-ant- and ElevenLabs sk_ keys);
+    the backup file never contains either key or voice settings
+  - production CSP: connect-src exactly 'self' https://api.anthropic.com
+    https://api.elevenlabs.io; media-src 'self' blob: (test checks exact set)
+  - ElevenLabs is opt-in; it receives only the text of an answer being read,
+    never the question, history or system prompt (test-enforced)
   - offline AI is loopback-only, in code (isLoopbackEndpoint) and on the Pi
-    (OLLAMA_HOST=127.0.0.1, app server HOST=127.0.0.1)
   - no server-side code, no account, no sync, no telemetry
   - nothing encrypted at rest; the contract says so
 
@@ -68,16 +78,21 @@ KNOWN LIMITATIONS:
   1. Phone and deck logs are separate; export/import by hand is the only bridge.
   2. Offline model quality/speed unmeasured; UI says to confirm torque values.
   3. Accessibility unaudited (unchanged).
-  4. Cloud chat does not stream.
-  5. React updates are manual (unchanged).
-  6. GitHub repo is public; flip to private in GitHub settings if intended.
+  4. Cloud chat does not stream, so reading starts only once the whole answer arrives.
+  5. Voice is read-aloud only; asking is still typed or via the keyboard dictation mic.
+  6. ⚙ text says "Get a free key" for Anthropic; usage needs paid credit.
+  7. React updates are manual (unchanged).
+  8. GitHub repo is public; flip to private in GitHub settings if intended.
 
 NEXT EXACT ACTION:
-  Caleb: apply the patch, `npm run check`, push. Then iPhone Phase 2.
+  Commit and push the voice work. On iPhone: AI Wrench -> 🔈 VOICE OFF to turn
+  it on -> ask a question -> confirm it's read aloud. Then ⚙ -> Voice ->
+  ElevenLabs, paste a key, ▶ TEST VOICE.
 
 DO NOT CHANGE:
   - assets/js/app.js by hand — generated from src/app.jsx
-  - localStorage keys taco-mi / taco-log / taco-apikey — existing data
+  - localStorage keys taco-mi / taco-log / taco-apikey / taco-voice* /
+    taco-elevenlabs-* — existing data
   - tests/vehicle-contract.test.js guards — a failure means the DATA is wrong
   - tests/ai-contract.test.js RETIRED_MODELS — add to it, never remove
 ```
@@ -99,6 +114,17 @@ Verified 2026-08-11. None of these were modified while building this repo:
 
 Newest first. One short entry per session. If an entry needs more than a few lines, it belongs
 in a doc, not here.
+
+### 2026-10-07 — Claude (Code, desktop) — AI Wrench reads answers aloud
+
+- Added 🔊 talk-back: device voice by default (free, offline, works on the deck), ElevenLabs
+  opt-in in ⚙ → Voice. Caleb explicitly approved answer text going to ElevenLabs while that
+  voice is chosen; recorded as PRODUCT_CONTRACT v1.2.
+- Any ElevenLabs failure (no signal, bad key, quota) falls back to the device voice with a
+  one-line reason. ▶ READ on each answer replays it.
+- CSP widened to api.elevenlabs.io + media-src blob:; the CSP test now checks the exact host
+  list. SHELL_VERSION v6. 97/97 tests; browser-verified with stubbed APIs; offline reload
+  verified with the server stopped. Not tried on an iPhone or with a real ElevenLabs key.
 
 ### 2026-10-07 — Claude (Code, desktop) — applied and pushed the 2026-10-07 patch series
 

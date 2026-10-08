@@ -1,6 +1,6 @@
 # Product Contract — Tacoma World
 
-**Version:** 1.1 · **Last updated:** 2026-10-07 · SOP §8 · changes in v1.1 listed at the end
+**Version:** 1.2 · **Last updated:** 2026-10-07 · SOP §8 · changes in v1.1 and v1.2 listed at the end
 
 Every statement here is meant to be verifiable. Where a claim is enforced by a test, the test
 is named. Do not soften a claim to make a test pass — fix the code, or change the contract
@@ -88,13 +88,18 @@ rear-diff volume, the four-cylinder plug number, or a CDN script tag each fail t
 **Requires a network:**
 
 - AI Wrench chat **on the phone** (calls `api.anthropic.com`)
+- the **ElevenLabs** read-aloud voice, when chosen (calls `api.elevenlabs.io`)
 - YouTube video links
+
+**Reading answers aloud** (🔊 in AI Wrench) uses the device's built-in voice by default, which
+needs no network and works on the deck. ElevenLabs is opt-in in ⚙ → Voice; if it fails or there
+is no signal, the device voice reads instead. Enforced by `voice-contract.test.js`.
 
 **On the cyberdeck, AI Wrench needs no network.** It calls a model running on the same Pi
 (`http://127.0.0.1:11434`, OpenAI-compatible API, Ollama by default). The app refuses any
 offline-model address that isn't the device itself — enforced by
 `ai-contract.test.js → Offline AI — stays on this device`. The production CSP still allows only
-`api.anthropic.com`, so the phone build cannot be pointed at a local port. Deck operation is in
+`api.anthropic.com` and `api.elevenlabs.io`, so the phone build cannot be pointed at a local port. Deck operation is in
 `docs/CYBERDECK.md`; it was dry-run against stubs and mock servers on 2026-10-07 and has **not
 yet run on Pi hardware**.
 
@@ -113,10 +118,15 @@ No financial data, no health data, nothing regulated.
 
 - **Storage:** browser `localStorage` on the user's own device. Keys: `taco-mi` (mileage),
   `taco-log` (service history), `taco-apikey`, `taco-ai` (`cloud` or `local`),
-  `taco-local-endpoint`, `taco-local-model`.
+  `taco-local-endpoint`, `taco-local-model`, `taco-voice` (`on`/`off`), `taco-voice-engine`
+  (`device`/`elevenlabs`), `taco-elevenlabs-key`, `taco-elevenlabs-voice`.
 - **No server.** No account, no sync, no telemetry, no analytics. Nothing this app stores ever
   leaves the device except the text of an AI chat message, which goes directly to Anthropic or,
-  on the deck, to a model on the same machine. A backup file leaves only when the user exports it.
+  on the deck, to a model on the same machine — and, **only while the ElevenLabs voice is chosen**,
+  the text of each answer being read aloud, which goes directly to ElevenLabs (never the question,
+  the chat history, or the system prompt). A backup file leaves only when the user exports it.
+- **The ElevenLabs key** is entered by the user, stored on their device only, sent only to
+  `api.elevenlabs.io`, and never exported — `voice-contract.test.js → keys stay private`.
 - **The API key** is entered by the user, stored on their device only, and sent only to
   `api.anthropic.com`. It is never in this repository — enforced by
   `vehicle-contract.test.js → Privacy`, which fails on any committed `sk-ant-` string.
@@ -177,6 +187,7 @@ install reads **"No record"** everywhere, even for past-due work. The app still 
 | "the AI works offline" (unqualified) | "on the cyberdeck, AI uses a local model; the phone needs a signal" |
 | "the offline AI knows the specs" | "it answers from the same reference, can still be wrong — confirm in the Library" |
 | "synced" | "exported and imported by hand" |
+| "hands-free" | "reads answers aloud; you still type or use the keyboard's dictation mic to ask" |
 | "verified torque spec" (for the U-bolts) | "unresolved across sources — verify against a current FSM" |
 
 ## Contract changes in v1.1 (2026-10-07)
@@ -189,3 +200,11 @@ Changed deliberately, per the instruction at the top of this file:
 | No backup, export, or import | Manual export/import with a merge | Two devices now keep separate logs and need a bridge. |
 | Fresh install can't flag past-due work | Still won't guess, but the user can log baselines in two taps | The Known-gap test still pins the no-guess behavior. |
 | AI chat used `claude-sonnet-4-20250514` | `CLOUD_MODEL = claude-sonnet-5-5`; retired IDs fail the build | That model was retired 2026-06-15; cloud chat had never worked in production. |
+
+## Contract changes in v1.2 (2026-10-07)
+
+| Was (v1.1) | Now (v1.2) | Why |
+|---|---|---|
+| AI Wrench is text only | 🔊 reads answers aloud; device voice by default, ElevenLabs opt-in | Caleb wants to hear answers while working on the truck. |
+| Nothing but chat text goes to Anthropic; no other third party | With the ElevenLabs voice chosen, the text of answers read aloud goes to ElevenLabs | Caleb approved this explicitly on 2026-10-07, opt-in only. |
+| CSP `connect-src 'self' https://api.anthropic.com` | adds `https://api.elevenlabs.io`; `media-src 'self' blob:` for the audio | Needed for the ElevenLabs call and playback. The test now checks the exact host list. |

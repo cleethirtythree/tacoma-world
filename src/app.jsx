@@ -334,6 +334,83 @@ function parseStreamLine(line) {
   }
 }
 
+// Talk-back. The device's built-in voice (speechSynthesis) is the default: free, no key, works
+// with no signal and on the deck. ElevenLabs is opt-in, needs a signal, and receives only the
+// text of the answer being read aloud. Guarded by tests/voice-contract.test.js.
+const ELEVEN_API = "https://api.elevenlabs.io";
+const ELEVEN_DEFAULTS = { voice:"JBFqnCBsd6RMkjVDRZzb", model:"eleven_flash_v2_5" };
+
+function isElevenVoiceId(id) {
+  return typeof id === "string" && /^[A-Za-z0-9]{8,40}$/.test(id);
+}
+
+// An answer as it should sound: no markdown, no URLs read letter by letter, units spoken.
+// Long answers are cut at a sentence so a read-aloud (and an ElevenLabs bill) stays bounded.
+function speakableText(text, max = 2500) {
+  let s = String(text || "");
+  s = s.replace(/```[\s\S]*?```/g, " ");
+  s = s.replace(/\[([^\]]+)\]\([^)]*\)/g, "$1");
+  s = s.replace(/https?:\/\/\S+/g, "link on screen");
+  s = s.replace(/\blb[-\s]?ft\b/gi, "pound-feet");
+  s = s.replace(/\bin[-\s]?lbs?\b/gi, "inch-pounds");
+  s = s.replace(/\bN[·\s-]?m\b/g, "newton-meters");
+  s = s.replace(/⚠️?/g, ". Warning: ");
+  s = s.replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{200D}]/gu, "");
+  s = s.replace(/[*`#>|]+/g, "").replace(/(^|\s)_+|_+(\s|$)/g, "$1$2");
+  s = s.replace(/^\s*[-•]\s+/gm, "");
+  s = s.replace(/([^\s.!?:;,])[ \t]*\n+/g, "$1. ");
+  s = s.replace(/\s+/g, " ").replace(/ \./g, ".").replace(/([.!?:;])(\s*\.)+/g, "$1").replace(/^[\s.]+/, "").trim();
+  if (s.length > max) {
+    const cut = Math.max(s.lastIndexOf(". ", max), s.lastIndexOf("? ", max), s.lastIndexOf("! ", max));
+    s = s.slice(0, cut > max / 2 ? cut + 1 : max).trim() + " The rest is on screen.";
+  }
+  return s;
+}
+
+// Device voices stall or cut off on long utterances (iOS especially), so read in short pieces.
+// Splits only at punctuation followed by a space, so "4.5 qt" and "0.028 in" stay whole.
+function splitForSpeech(text, max = 220) {
+  const parts = String(text || "").replace(/([.!?;:])\s+/g, "$1\u0000").split("\u0000");
+  const chunks = [];
+  let cur = "";
+  const push = () => { if (cur.trim()) chunks.push(cur.trim()); cur = ""; };
+  for (let p of parts) {
+    p = p.trim();
+    if (!p) continue;
+    while (p.length > max) {
+      let cut = p.lastIndexOf(" ", max);
+      if (cut <= 0) cut = max;
+      push();
+      chunks.push(p.slice(0, cut).trim());
+      p = p.slice(cut).trim();
+    }
+    if (cur && (cur + " " + p).length > max) push();
+    cur = cur ? cur + " " + p : p;
+  }
+  push();
+  return chunks;
+}
+
+// A tiny silent WAV. Played from a tap so iOS lets later, non-tap audio (an answer that
+// arrives seconds after Send) play through the same element.
+function silentWavBlob() {
+  const b = new DataView(new ArrayBuffer(46));
+  const str = (o, t) => { for (let i = 0; i < t.length; i++) b.setUint8(o + i, t.charCodeAt(i)); };
+  str(0, "RIFF"); b.setUint32(4, 38, true); str(8, "WAVE"); str(12, "fmt ");
+  b.setUint32(16, 16, true); b.setUint16(20, 1, true); b.setUint16(22, 1, true);
+  b.setUint32(24, 8000, true); b.setUint32(28, 16000, true); b.setUint16(32, 2, true); b.setUint16(34, 16, true);
+  str(36, "data"); b.setUint32(40, 2, true); b.setInt16(44, 0, true);
+  return new Blob([b.buffer], { type:"audio/wav" });
+}
+
+// Best English voice this device has. iOS "Enhanced"/"Premium" voices sound far less robotic.
+function pickDeviceVoice(voices) {
+  const en = (voices || []).filter(v => /^en([-_]|$)/i.test(v.lang || ""));
+  const good = v => /premium|enhanced|neural|natural/i.test(v.name || "");
+  const us = v => /en[-_]US/i.test(v.lang || "");
+  return en.find(v => good(v) && us(v)) || en.find(good) || en.find(v => v.default) || en.find(us) || en[0] || null;
+}
+
 // The deck's kiosk opens /?ai=local&endpoint=…&model=… so it boots straight into offline
 // mode. Applied once, saved to this device, then removed from the address bar.
 (function applyLaunchParams() {
@@ -419,6 +496,17 @@ function TacomaHub() {
   const [modelInput, setModelInput] = useState("");
   const [localStatus, setLocalStatus] = useState("idle");
   const localRun = useRef(0);
+  const [voiceOn, setVoiceOn] = useState(() => localStorage.getItem("taco-voice") === "on");
+  const [voiceEngine, setVoiceEngine] = useState(() => localStorage.getItem("taco-voice-engine") === "elevenlabs" ? "elevenlabs" : "device");
+  const [elevenKey, setElevenKey] = useState(() => localStorage.getItem("taco-elevenlabs-key") || "");
+  const [elevenKeyInput, setElevenKeyInput] = useState("");
+  const [elevenVoice, setElevenVoice] = useState(() => localStorage.getItem("taco-elevenlabs-voice") || ELEVEN_DEFAULTS.voice);
+  const [voiceIdInput, setVoiceIdInput] = useState("");
+  const [speaking, setSpeaking] = useState(false);
+  const [voiceMsg, setVoiceMsg] = useState("");
+  const voiceOnRef = useRef(voiceOn);
+  const speechRun = useRef(0);
+  const audioRef = useRef(null);
   const importRef = useRef(null);
   const chatEnd = useRef(null);
 
@@ -554,6 +642,173 @@ function TacomaHub() {
     else localRun.current++;
   }, [provider, localCfg.endpoint, localCfg.model]);
 
+  // ---- Talk-back ----
+
+  const getAudio = () => {
+    if (!audioRef.current) {
+      const a = new Audio();
+      a.setAttribute("playsinline", "");
+      audioRef.current = a;
+    }
+    return audioRef.current;
+  };
+
+  const releaseAudio = (a) => {
+    a.pause();
+    const src = a.getAttribute("src") || "";
+    if (src.startsWith("blob:")) URL.revokeObjectURL(src);
+    a.removeAttribute("src");
+  };
+
+  const stopSpeaking = () => {
+    speechRun.current++;
+    try { window.speechSynthesis && window.speechSynthesis.cancel(); } catch (e) {}
+    if (audioRef.current) releaseAudio(audioRef.current);
+    setSpeaking(false);
+  };
+
+  // Call from a tap (toggle, Send, Test, Read). iOS only lets audio start from a user gesture;
+  // this "spends" the gesture so the answer can play when it arrives later.
+  const unlockAudio = () => {
+    try {
+      const synth = window.speechSynthesis;
+      if (synth && typeof SpeechSynthesisUtterance !== "undefined" && !synth.speaking) {
+        const u = new SpeechSynthesisUtterance(" ");
+        u.volume = 0;
+        synth.speak(u);
+      }
+    } catch (e) {}
+    if (voiceEngine === "elevenlabs") {
+      try {
+        const a = getAudio();
+        if (!a.getAttribute("src")) {
+          a.src = URL.createObjectURL(silentWavBlob());
+          a.play().catch(() => {});
+        }
+      } catch (e) {}
+    }
+  };
+
+  const speakDevice = (text, run) => {
+    const synth = window.speechSynthesis;
+    if (!synth || typeof SpeechSynthesisUtterance === "undefined") {
+      setVoiceMsg("This browser can't read aloud.");
+      setSpeaking(false);
+      return;
+    }
+    const chunks = splitForSpeech(text);
+    if (!chunks.length) { setSpeaking(false); return; }
+    const voice = pickDeviceVoice(synth.getVoices());
+    chunks.forEach((c, i) => {
+      const u = new SpeechSynthesisUtterance(c);
+      if (voice) { u.voice = voice; u.lang = voice.lang; } else u.lang = "en-US";
+      if (i === chunks.length - 1) u.onend = u.onerror = () => { if (run === speechRun.current) setSpeaking(false); };
+      synth.speak(u);
+    });
+    setSpeaking(true);
+  };
+
+  const speakEleven = async (text, run) => {
+    let r;
+    try {
+      r = await fetch(`${ELEVEN_API}/v1/text-to-speech/${encodeURIComponent(elevenVoice)}?output_format=mp3_44100_64`, {
+        method:"POST",
+        headers:{ "Content-Type":"application/json", "Accept":"audio/mpeg", "xi-api-key": elevenKey },
+        body: JSON.stringify({ text, model_id:ELEVEN_DEFAULTS.model }),
+      });
+    } catch (e) {
+      throw new Error("No connection to ElevenLabs");
+    }
+    if (!r.ok) {
+      let detail = "";
+      try { const j = await r.json(); detail = (j.detail && (j.detail.message || j.detail.status)) || ""; } catch (e) {}
+      const hint = r.status === 401 ? " (check the ElevenLabs key in ⚙)" : "";
+      throw new Error(`ElevenLabs error ${r.status}${detail ? ": " + String(detail).slice(0, 140) : ""}${hint}`);
+    }
+    const blob = await r.blob();
+    if (run !== speechRun.current) return;
+    const a = getAudio();
+    releaseAudio(a);
+    const url = URL.createObjectURL(blob);
+    a.onended = () => { URL.revokeObjectURL(url); if (run === speechRun.current) setSpeaking(false); };
+    a.src = url;
+    try {
+      await a.play();
+    } catch (e) {
+      throw new Error("The phone blocked audio playback. Tap ▶ READ on the answer");
+    }
+  };
+
+  // Read one answer aloud. ElevenLabs when chosen and keyed; the device voice otherwise and
+  // whenever ElevenLabs fails, so a dead signal never means silence.
+  const speak = async (raw) => {
+    stopSpeaking();
+    const run = speechRun.current;
+    const text = speakableText(raw);
+    if (!text) return;
+    if (voiceEngine === "elevenlabs" && elevenKey && isElevenVoiceId(elevenVoice)) {
+      setSpeaking(true);
+      try {
+        await speakEleven(text, run);
+        if (run === speechRun.current) setVoiceMsg("");
+        return;
+      } catch (e) {
+        if (run !== speechRun.current) return;
+        setVoiceMsg(`${e.message}. Using the device voice.`);
+      }
+    }
+    speakDevice(text, run);
+  };
+
+  const toggleVoice = () => {
+    if (speaking) { stopSpeaking(); return; }
+    const on = !voiceOn;
+    setVoiceOn(on);
+    voiceOnRef.current = on;
+    localStorage.setItem("taco-voice", on ? "on" : "off");
+    setVoiceMsg("");
+    if (on) unlockAudio();
+  };
+
+  const chooseVoiceEngine = (e) => {
+    stopSpeaking();
+    setVoiceEngine(e);
+    localStorage.setItem("taco-voice-engine", e);
+    setVoiceMsg("");
+  };
+
+  const saveElevenKey = () => {
+    const k = elevenKeyInput.trim();
+    if (k) { localStorage.setItem("taco-elevenlabs-key", k); setElevenKey(k); setVoiceMsg("ElevenLabs key saved."); }
+    setElevenKeyInput("");
+  };
+
+  const clearElevenKey = () => {
+    localStorage.removeItem("taco-elevenlabs-key");
+    setElevenKey("");
+    setElevenKeyInput("");
+    setVoiceMsg("ElevenLabs key cleared. The device voice will read answers.");
+  };
+
+  const saveVoiceId = () => {
+    const v = voiceIdInput.trim() || ELEVEN_DEFAULTS.voice;
+    if (!isElevenVoiceId(v)) { setVoiceMsg("A voice ID is letters and numbers only, from the ElevenLabs voice library."); return; }
+    localStorage.setItem("taco-elevenlabs-voice", v);
+    setElevenVoice(v);
+    setVoiceIdInput(v);
+    setVoiceMsg("Voice saved.");
+  };
+
+  const testVoice = () => {
+    unlockAudio();
+    speak("Voice check. AI Wrench will read its answers like this while you work.");
+  };
+
+  const readAloud = (text) => {
+    unlockAudio();
+    speak(text);
+  };
+
   const sendCloud = async (history, taskCtx) => {
     const r = await fetch("https://api.anthropic.com/v1/messages", {
       method:"POST",
@@ -578,6 +833,7 @@ function TacomaHub() {
     } else {
       const reply = d.content?.find(c => c.type==="text")?.text || "No response received.";
       setMsgs(p => [...p, { role:"assistant", content:reply }]);
+      if (voiceOnRef.current) speak(reply);
     }
   };
 
@@ -627,6 +883,7 @@ function TacomaHub() {
       if (tail) { text += tail; show(text); }
     }
     if (!text) throw new Error("The offline model returned an empty answer.");
+    if (voiceOnRef.current) speak(text);
   };
 
   const send = async () => {
@@ -634,6 +891,8 @@ function TacomaHub() {
     if (provider === "cloud" && !apiKey) { setShowSettings(true); return; }
     const userMsg = inputText.trim();
     setInputText("");
+    stopSpeaking();
+    if (voiceOnRef.current) unlockAudio();
     const taskCtx = task ? `\n\nUser is viewing the "${task.name}" task.` : "";
     const next = [...msgs, { role:"user", content:userMsg }];
     setMsgs(next);
@@ -753,6 +1012,10 @@ function TacomaHub() {
     statusLine:(c) => ({ fontFamily:"'Courier New', monospace", fontSize:"11px", color:c, marginTop:"10px", lineHeight:1.6 }),
     seg:(a) => ({ flex:1, background: a ? "#cc0000" : "transparent", border: a ? "1px solid #cc0000" : "1px solid #333", borderRadius:"4px", color: a ? "#fff" : "#888", fontFamily:"Impact, sans-serif", letterSpacing:"0.06em", fontSize:"14px", padding:"9px 12px", cursor:"pointer" }),
     offlineBanner:{ padding:"7px 16px", background:"#1a1200", borderBottom:"1px solid #2a2000", fontSize:"11px", color:"#f5a623", fontFamily:"'Courier New', monospace", flexShrink:0 },
+    voiceBar:{ display:"flex", alignItems:"center", gap:"10px", padding:"6px 16px", background:"#0f0f0f", borderTop:"1px solid #1a1a1a", flexShrink:0, flexWrap:"wrap" },
+    voiceBtn:(on, live) => ({ background: live ? "#cc0000" : on ? "#0a1f0a" : "transparent", border: live ? "1px solid #cc0000" : on ? "1px solid #1a4a1a" : "1px solid #333", borderRadius:"14px", color: live ? "#fff" : on ? "#22c55e" : "#888", fontFamily:"Impact, sans-serif", letterSpacing:"0.06em", fontSize:"13px", padding:"5px 14px", cursor:"pointer", flexShrink:0 }),
+    voiceNote:{ fontFamily:"'Courier New', monospace", fontSize:"11px", color:"#666", flex:1, minWidth:"140px", lineHeight:1.4 },
+    readBtn:{ display:"block", marginTop:"6px", background:"transparent", border:"none", padding:0, color:"#666", fontFamily:"'Courier New', monospace", fontSize:"11px", cursor:"pointer" },
     modalDone:{ background:"transparent", border:"1px solid #333", borderRadius:"4px", color:"#f0f0f0", fontFamily:"Impact, sans-serif", letterSpacing:"0.06em", fontSize:"14px", padding:"9px 20px", cursor:"pointer", marginTop:"20px", width:"100%" },
   };
 
@@ -949,6 +1212,49 @@ function TacomaHub() {
             </div>
 
             <div style={T.setSec}>
+              <div style={T.secTitle}>VOICE · READ ANSWERS ALOUD</div>
+              <div style={{ ...T.setRow, marginBottom:"12px" }}>
+                <button style={T.seg(voiceEngine === "device")} onClick={() => chooseVoiceEngine("device")}>DEVICE</button>
+                <button style={T.seg(voiceEngine === "elevenlabs")} onClick={() => chooseVoiceEngine("elevenlabs")}>ELEVENLABS</button>
+              </div>
+              {voiceEngine === "device" ? (
+                <div style={T.modalSub}>
+                  Your device's built-in voice. Free, no key, and works with no signal and on the deck.<br /><br />
+                  iPhone: for a much better voice, open Settings → Accessibility → Spoken Content →
+                  Voices → English, and download one marked Enhanced or Premium.
+                </div>
+              ) : (
+                <div>
+                  <div style={T.modalSub}>
+                    Natural voice. Needs a signal. While this is on, the text of each answer being read
+                    aloud is sent to ElevenLabs. Your key is stored on this device only and sent only to
+                    api.elevenlabs.io. With no signal or an error, the device voice reads instead.<br /><br />
+                    Create a key at <a href="https://elevenlabs.io/app/settings/api-keys" target="_blank" rel="noopener noreferrer" style={T.link}>elevenlabs.io</a> → API Keys.
+                    Restrict it to Text to Speech and set a credit limit.
+                  </div>
+                  <input style={T.modalInput} type="password" value={elevenKeyInput} onChange={e => setElevenKeyInput(e.target.value)}
+                    onKeyDown={e => e.key === "Enter" && saveElevenKey()} placeholder={elevenKey ? "Key saved · paste to replace" : "ElevenLabs API key"} aria-label="ElevenLabs API key" />
+                  <div style={T.setRow}>
+                    <button style={T.modalBtn} onClick={saveElevenKey}>SAVE KEY</button>
+                  </div>
+                  {elevenKey && <button style={T.modalClear} onClick={clearElevenKey}>Clear saved ElevenLabs key</button>}
+                  <div style={{ ...T.modalSub, marginTop:"14px", marginBottom:"6px" }}>
+                    Voice ID (optional): copy one from the ElevenLabs voice library. Blank = default voice.
+                  </div>
+                  <input style={T.modalInput} value={voiceIdInput} onChange={e => setVoiceIdInput(e.target.value)}
+                    onKeyDown={e => e.key === "Enter" && saveVoiceId()} placeholder={ELEVEN_DEFAULTS.voice} aria-label="ElevenLabs voice ID" />
+                  <div style={T.setRow}>
+                    <button style={T.modalCancel} onClick={saveVoiceId}>SAVE VOICE</button>
+                  </div>
+                </div>
+              )}
+              <div style={{ ...T.setRow, marginTop:"10px" }}>
+                <button style={T.modalCancel} onClick={speaking ? stopSpeaking : testVoice}>{speaking ? "■ STOP" : "▶ TEST VOICE"}</button>
+              </div>
+              {voiceMsg && <div style={T.statusLine("#f5a623")}>{voiceMsg}</div>}
+            </div>
+
+            <div style={T.setSec}>
               <div style={T.secTitle}>SERVICE LOG BACKUP</div>
               <div style={T.modalSub}>
                 Export a file, then import it on your other device. Imports merge: for each task the
@@ -975,7 +1281,7 @@ function TacomaHub() {
             <div style={T.title}>2019 Tacoma TRD Sport</div>
             <div style={T.sub}>3.5L V6 · 6-Speed Auto · 4WD</div>
           </div>
-          <button style={T.settingsBtn} onClick={() => { setApiKeyInput(""); setBackupMsg(""); setEndpointInput(localCfg.endpoint); setModelInput(localCfg.model); setShowSettings(true); }} title={aiReady ? "AI ready ✓" : "Settings"} aria-label="Settings">
+          <button style={T.settingsBtn} onClick={() => { setApiKeyInput(""); setBackupMsg(""); setEndpointInput(localCfg.endpoint); setModelInput(localCfg.model); setElevenKeyInput(""); setVoiceIdInput(elevenVoice); setVoiceMsg(""); setShowSettings(true); }} title={aiReady ? "AI ready ✓" : "Settings"} aria-label="Settings">
             {aiReady ? "⚙✓" : "⚙"}
           </button>
         </div>
@@ -1039,12 +1345,28 @@ function TacomaHub() {
             <div style={T.chatMsgs}>
               <div style={T.aiBub}>{provider === "local" ? LOCAL_GREETING : CLOUD_GREETING}</div>
               {msgs.map((m,i) => (
-                <div key={i} style={m.role==="user" ? T.userBub : T.aiBub}>{m.content}</div>
+                <div key={i} style={m.role==="user" ? T.userBub : T.aiBub}>
+                  {m.content}
+                  {m.role === "assistant" && !m.ui && !m.streaming && (
+                    <button style={T.readBtn} onClick={() => readAloud(m.content)} aria-label="Read this answer aloud">▶ READ</button>
+                  )}
+                </div>
               ))}
               {aiLoading && msgs[msgs.length - 1]?.role === "user" && (
                 <div style={T.typingBub}>⟳  Thinking...{provider === "local" ? " (offline model: this can take a minute)" : ""}</div>
               )}
               <div ref={chatEnd} />
+            </div>
+            <div style={T.voiceBar}>
+              <button style={T.voiceBtn(voiceOn, speaking)} onClick={toggleVoice} aria-pressed={voiceOn}
+                aria-label={speaking ? "Stop reading" : voiceOn ? "Turn voice off" : "Turn voice on"}>
+                {speaking ? "■ STOP" : voiceOn ? "🔊 VOICE ON" : "🔈 VOICE OFF"}
+              </button>
+              <span style={T.voiceNote}>
+                {voiceMsg || (voiceOn
+                  ? (voiceEngine === "elevenlabs" && elevenKey ? "ElevenLabs voice · reads each answer" : "Device voice · reads each answer")
+                  : "Tap to hear answers read aloud")}
+              </span>
             </div>
             <div style={T.quickBar}>
               {["Torque specs for oil change?","How do I check ATF level?","Diff fluid — fill plug first?","Spark plug gap spec?"].map(q => (

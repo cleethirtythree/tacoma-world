@@ -21,6 +21,7 @@
     │      └ localStorage: taco-mi / taco-log / taco-ai│
     │      └ fetch: api.anthropic.com      (phone)     │
     │      └ fetch: 127.0.0.1:11434        (deck)      │
+    │      └ fetch: api.elevenlabs.io (opt-in voice)   │
     └──────────────────────────────────────────────────┘
 
     service-worker.js          public shell cache only, versioned
@@ -40,6 +41,7 @@ deck, `scripts/serve.js` serves the same static files to the Pi itself.
 | Domain rules | `getStatus()` | Mileage vs. interval → ok / due / overdue. The only real logic. |
 | Persistence | `localStorage` | Six keys. No adapter layer — the surface is too small to justify one. Backup is a JSON file the user exports. |
 | Network | `sendCloud()` / `sendLocal()` | Cloud: Anthropic Messages API. Local: OpenAI-compatible chat API on loopback, streamed. Chosen in ⚙ per device. |
+| Voice | `speak()` → `speakDevice()` / `speakEleven()` | Reads answers aloud. Device `speechSynthesis` by default (offline-safe); ElevenLabs text-to-speech when chosen in ⚙, falling back to the device voice on any failure. `speakableText()` turns markdown/units into speech. |
 | UI | React components | Inline style objects, no CSS framework. |
 | Delivery | service worker + manifest | The platform boundary that was rewritten. |
 

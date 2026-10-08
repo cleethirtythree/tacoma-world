@@ -12,6 +12,7 @@ require("./schedule-contract.test.js");
 require("./ai-contract.test.js");
 require("./backup-contract.test.js");
 require("./deck-contract.test.js");
+require("./voice-contract.test.js");
 
 const summary = report();
 

@@ -140,12 +140,16 @@ suite("Deployment config");
 
 const vercel = JSON.parse(read("vercel.json"));
 
-test("sets a Content-Security-Policy that permits only the Anthropic API", () => {
+test("sets a Content-Security-Policy that permits only the Anthropic and ElevenLabs APIs", () => {
   const csp = vercel.headers
     .flatMap((h) => h.headers)
     .find((h) => h.key === "Content-Security-Policy");
   assert(csp, "no CSP configured");
-  assertIncludes(csp.value, "connect-src 'self' https://api.anthropic.com", "connect-src wrong");
+  // Exact set, not a prefix match: adding any other host must be a deliberate contract change.
+  const directive = (name) => (csp.value.split(";").map((d) => d.trim().split(/\s+/)).find((d) => d[0] === name) || []).slice(1).sort().join(" ");
+  assertEqual(directive("connect-src"), ["'self'", "https://api.anthropic.com", "https://api.elevenlabs.io"].sort().join(" "), "connect-src wrong");
+  // ElevenLabs audio plays from an in-memory blob; nothing else may be loaded as media.
+  assertEqual(directive("media-src"), ["'self'", "blob:"].sort().join(" "), "media-src wrong");
   assertIncludes(csp.value, "frame-ancestors 'none'", "clickjacking protection missing");
   assertIncludes(csp.value, "object-src 'none'", "object-src should be locked down");
 });
